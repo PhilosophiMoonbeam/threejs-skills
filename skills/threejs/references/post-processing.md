@@ -33,8 +33,11 @@ composer.addPass(new OutputPass());
 renderer.setAnimationLoop(() => composer.render());
 ```
 
-`OutputPass` applies renderer tone mapping, exposure, and output-color-space conversion.
-A `GammaCorrectionShader` pass is not a substitute. See [OutputPass revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/postprocessing/OutputPass.js)
+`OutputPass` is the single WebGL final-output conversion: it reads the renderer's
+tone mapping, exposure, and output color space. Keep preceding shader passes in
+working linear-sRGB and do not also apply `tonemapping_fragment` or
+`colorspace_fragment` in those intermediate passes. A `GammaCorrectionShader`
+pass is not a substitute. See [OutputPass revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/postprocessing/OutputPass.js)
 and the [r154→r155 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155).
 
 Do not set an individual pass's `renderToScreen`. On every render, `EffectComposer`
@@ -181,9 +184,14 @@ renderPipeline.outputNode = sceneColor.add(bloomPass);
 renderer.setAnimationLoop(() => renderPipeline.render());
 ```
 
-`RenderPipeline` performs final tone mapping and output conversion; do not add
-`OutputPass`. Resize the renderer with logical dimensions. Use `setResolutionScale()`
-or a node's `resolutionScale` where supported. Sources: [RenderPipeline](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/RenderPipeline.js),
+With the default `outputColorTransform = true`, `RenderPipeline` adds the single
+final tone-mapping and output-color-space conversion; do not add `OutputPass` or
+perform another conversion in the graph. If you set `outputColorTransform = false`,
+place exactly one `renderOutput(...)` node at the point where conversion is needed
+(for example, before an FXAA node); no automatic conversion is then applied. Resize
+the renderer with logical dimensions. Use `setResolutionScale()` or a node's
+`resolutionScale` where supported. Sources:
+[RenderPipeline](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/RenderPipeline.js),
 [revision 185 bloom](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_postprocessing_bloom.html).
 
 For WebGPU DOF, pass scene color and `scenePass.getViewZNode()` to `dof()` from

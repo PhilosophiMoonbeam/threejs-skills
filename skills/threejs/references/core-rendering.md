@@ -14,9 +14,10 @@ import * as THREE from 'three';
 ```
 
 - Use `WebGLRenderer` from `three` for the mature WebGL 2 path and broad material/addon support.
-- Use `WebGPURenderer` from `three/webgpu` when WebGPU, node materials, or TSL is a requirement. It prefers WebGPU and falls back to WebGL 2 unless configured otherwise.
+- Use `WebGPURenderer` from `three/webgpu` when WebGPU, node materials, or TSL is a requirement. It selects WebGPU when available and otherwise falls back to a WebGL 2 backend; `{ forceWebGL: true }` deliberately selects that fallback.
 - WebGPU/renderer classes come from `three/webgpu`; TSL functions come from `three/tsl`; ordinary addons use `three/addons/...`.
-- `WebGLRenderer` is ready after construction. `WebGPURenderer.setAnimationLoop()` initializes its backend automatically. For on-demand rendering or synchronous feature queries, call `await renderer.init()` before `renderer.render()`; do not use deprecated `renderAsync()`. [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html), [r180→r181](https://github.com/mrdoob/three.js/wiki/Migration-Guide#180--181)
+- `WebGLRenderer` is ready after construction. `WebGPURenderer.setAnimationLoop()` asynchronously initializes its backend before installing the loop. For on-demand rendering or synchronous feature queries, `await renderer.init()` before calling `renderer.render()`; do not use deprecated `renderAsync()`. [WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer.html), [Renderer initialization and loop](https://threejs.org/docs/pages/Renderer.html#init), [r185 WebGPURenderer source](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgpu/WebGPURenderer.js#L12-L93)
+- For `Renderer`/`WebGPURenderer`, call `await renderer.init()` first, then use synchronous `renderer.hasFeature(name)` for selected-backend capability checks; r185 throws when `hasFeature()` is called before backend initialization. `hasFeatureAsync()` is deprecated. [r185 `Renderer.js` implementation](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js#L2845-L2880)
 - WebGL defaults `alpha` to `false`; WebGPU defaults it to `true`. Prefer an opaque clear/background unless HTML compositing is intentional. r185 changed WebGPU premultiplied-alpha behavior. [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185)
 
 ```js
@@ -89,6 +90,33 @@ function dispose() {
 ```
 
 Use `renderer.setAnimationLoop()`, not a manual `requestAnimationFrame()` loop; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` is deprecated in Three.js 0.185.1. [Timer](https://threejs.org/docs/pages/Timer.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
+This uses the `setPixelRatio()` strategy: `setSize()` receives CSS-pixel dimensions and applies the renderer's pixel ratio once. Do not pass `width * dpr` and also leave a non-`1` pixel ratio configured. If physical dimensions are managed manually instead, set the renderer pixel ratio to `1` and pass the multiplied drawing-buffer dimensions. [Responsive rendering manual](https://threejs.org/manual/en/responsive.html)
+
+## Continuous versus on-demand rendering
+
+Choose one owner for frame scheduling. Use `setAnimationLoop()` for animation or WebXR; for a static scene, render once and invalidate only when state changes. A one-shot `requestAnimationFrame()` is appropriate for coalescing invalidations, but do not install it alongside an animation loop:
+
+```js
+let frameId = null;
+function renderOnDemand() {
+  frameId = null;
+  if (controls.enableDamping) controls.update();
+  resize(); // resize the drawing buffer and update the camera
+  renderer.render(scene, camera);
+}
+function invalidate() {
+  if (frameId === null) frameId = requestAnimationFrame(renderOnDemand);
+}
+
+controls.addEventListener('change', invalidate);
+window.addEventListener('resize', invalidate);
+const resizeObserver = new ResizeObserver(invalidate);
+resizeObserver.observe(renderer.domElement);
+// Call invalidate() after an async model/texture/data update as well.
+invalidate();
+```
+
+Set `frameId` back to `null` before rendering so damping-triggered `change` events schedule at most one next frame. Invalidate after controls, resize, and asset/data changes; cancel a pending `frameId` and remove those listeners during disposal. This avoids a continuously running loop and avoids duplicate queued frames. [Rendering on demand manual](https://threejs.org/manual/en/rendering-on-demand.html)
 
 ## Cameras
 
@@ -168,20 +196,20 @@ Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Th
 - `renderer.outputColorSpace` already defaults to `THREE.SRGBColorSpace`; assigning it again is unnecessary.
 - Lighting calculations use Linear-sRGB. `Color` stores Linear-sRGB working values; hex and CSS colors are interpreted as sRGB and converted automatically.
 - `color.setRGB(r, g, b)` treats values as working-space components unless its optional source color space is supplied. Linear/HDR values may exceed 1.
-- Mark color PNG/JPEG textures with `texture.colorSpace = THREE.SRGBColorSpace`; data maps retain `THREE.NoColorSpace`. Texture ownership belongs to the textures topic.
+- Mark color PNG/JPEG textures with `texture.colorSpace = THREE.SRGBColorSpace`; non-color/data maps generally retain `THREE.NoColorSpace`. Color HDR data such as EXR uses `THREE.LinearSRGBColorSpace`. Texture ownership belongs to the textures topic. [Color management](https://threejs.org/manual/en/color-management.html)
 - `renderer.toneMapping = THREE.ACESFilmicToneMapping` is an artistic choice; Three.js 0.185.1 still defaults to `NoToneMapping`.
 - Direct rendering to the screen applies renderer tone mapping and output-color-space conversion; ordinary offscreen render targets remain in their configured texture color space. A WebGL `EffectComposer` should end with `OutputPass` for final tone mapping and color conversion. [Color management](https://threejs.org/manual/en/color-management.html), [WebGLRenderer output](https://threejs.org/docs/pages/WebGLRenderer.html#outputColorSpace), [r154→r155](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155), [revision 185 OutputPass](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/postprocessing/OutputPass.js#L74-L83)
 - A WebGPU `RenderPipeline` normally leaves `outputColorTransform` enabled; disable it only when the pipeline graph explicitly adds `renderOutput()`. `preserveDrawingBuffer` is a WebGL-only renderer option and normally remains `false`; for a WebGL screenshot, render immediately before `canvas.toBlob()` or `toDataURL()`. [revision 185 RenderPipeline](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/RenderPipeline.js#L205-L218), [revision 185 WebGPURenderer options](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgpu/WebGPURenderer.js#L24-L35), [Screenshot guidance](https://threejs.org/manual/en/tips.html#taking-a-screenshot-of-the-canvas)
 
 ## Disposal and ownership
 
-Stop producers before freeing consumers: clear the animation loop, disconnect observers/listeners, then dispose `Timer` and controls. Dispose every owned geometry, material, texture, render target, and `Skeleton`; remove objects; finally dispose the renderer. Removing an `Object3D` does not dispose GPU resources, and disposing a material does not dispose its textures. Shared resources must be disposed exactly once by their owner. Asset-loading and textures topics define ownership at load boundaries. [Disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html)
+Stop producers before freeing consumers: clear the animation loop, cancel any queued on-demand frame, disconnect observers/listeners, then dispose `Timer` and controls. Dispose every owned geometry, material, texture, render target, and `Skeleton`; remove objects; finally dispose the renderer. Removing an `Object3D` does not dispose GPU resources, and disposing a material does not dispose its textures. Shared resources must be disposed exactly once by their owner. Asset-loading and textures topics define ownership at load boundaries. [Disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html)
 
 ## Render performance
 
 - Measure draw calls with `renderer.info.render.calls` for WebGL or `renderer.info.render.drawCalls` for WebGPU, and triangles with `renderer.info.render.triangles` for either renderer; reset behavior changes if `renderer.info.autoReset` is disabled. [revision 185 WebGLInfo](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLInfo.js#L5-L16), [revision 185 common Info](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Info.js#L44-L73)
 - Reduce draw calls through instancing or deliberate geometry merging; keep material-count and update-cost tradeoffs visible.
-- Keep frustum culling enabled. Ordinary object culling uses a bounding sphere; recompute it after vertex or instance bounds change. [revision 185 Frustum source](https://github.com/mrdoob/three.js/blob/r185/src/math/Frustum.js#L125-L147)
+- Keep frustum culling enabled. Ordinary object culling uses a bounding sphere; recompute it after vertex or instance bounds change. For vertex deformation performed only in a shader, enlarge the CPU bound or disable culling for that object. [revision 185 Frustum source](https://github.com/mrdoob/three.js/blob/r185/src/math/Frustum.js#L125-L147)
 - Cap device pixel ratio when fill rate dominates; lower render-target resolution for expensive offscreen effects.
 - Avoid per-frame allocations, forced whole-tree matrix updates, redundant world-space queries, and unconditional cube-map captures.
 - Update static shadows portably per light: set `light.shadow.autoUpdate = false`, then set `light.shadow.needsUpdate = true` whenever that light's shadow must refresh. The equivalent `renderer.shadowMap` flags are WebGL-specific. `PCFShadowMap` is the soft WebGL default in Three.js 0.185.1; do not select deprecated `PCFSoftShadowMap`. [revision 185 common renderer](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js#L697-L709), [revision 185 ShadowNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/lighting/ShadowNode.js#L853-L874), [revision 185 WebGLShadowMap](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLShadowMap.js#L86-L95), [r181→r182](https://github.com/mrdoob/three.js/wiki/Migration-Guide#181--182)

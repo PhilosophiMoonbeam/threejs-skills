@@ -64,14 +64,16 @@ Run the copy command from a location where `$PROJECT/.claude/skills/threejs` doe
 
 ## Activation and routing
 
-Claude Code discovers the single skill through the `threejs` metadata in `SKILL.md`. Requests involving Three.js scene setup, rendering, geometry, materials, lighting, textures, loading, animation, interaction, shaders, TSL, post-processing, migration, or performance can activate it.
+`SKILL.md` metadata is the activation surface. Use this skill for requests involving Three.js scene setup, rendering, geometry, materials, lighting, textures, loading, animation, interaction, shaders, TSL, post-processing, migration, or performance.
 
 After activation, the index classifies the task and directs the agent to the relevant reference or references. For example:
 
-- A scene and resize request routes to core rendering.
+- A scene, responsive-sizing, or rendering-on-demand request routes to core rendering.
 - A GLB request routes to asset loading; animation playback also routes to animation.
 - A pointer-selection request routes to interaction and controls.
-- A custom WebGPU node effect routes to shaders and TSL.
+- A WebGPU availability or backend-capability request routes to core rendering.
+- A TSL compute or node-material request routes to shaders and TSL.
+- A `RectAreaLight`, `RectAreaLightUniformsLib`, `RectAreaLightTexturesLib`, or LTC-initialization request routes to lighting and shadows.
 - Code written for an earlier revision also routes to the 0.185.1 migration reference.
 
 References supply domain detail only after routing. They do not compete for activation and do not form reference chains.
@@ -82,21 +84,27 @@ Ask Claude Code for the result and constraints you need. Examples:
 
 > Create a Three.js 0.185.1 WebGL scene with a responsive camera and a rotating instanced mesh.
 
+> Build a Three.js 0.185.1 WebGPU scene using TSL compute and `MeshStandardNodeMaterial`, with an explicit unsupported-WebGPU path.
+
 > Load a Draco-compressed GLB, play one animation clip, and dispose of owned resources during teardown.
 
 > Migrate this older Three.js post-processing pipeline to 0.185.1 and explain each required API change.
 
-State the renderer when it matters (`WebGLRenderer` or `WebGPURenderer`) and identify the build environment, asset formats, color-data assumptions, and lifecycle constraints when known.
-
 ## Three.js 0.185.1 source policy
 
-All guidance targets exactly Three.js 0.185.1. Addon imports use `three/addons/...`. Revision-sensitive statements must cite an adjacent official source:
+All guidance targets exactly npm `three@0.185.1` / revision 185. Use package exports (`three`, `three/webgpu`, `three/tsl`, and `three/addons/...`) rather than repository internals. Revision-sensitive statements must cite an adjacent official source:
 
 - [Three.js documentation](https://threejs.org/docs/)
+- [Three.js LLM index](https://threejs.org/docs/llms.txt) (conceptual guidance; its examples may target a different release than this pinned package)
 - [Three.js revision 185 tagged source](https://github.com/mrdoob/three.js/tree/r185)
+- [Three.js revision 185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json)
 - [Three.js migration guide](https://github.com/mrdoob/three.js/wiki/Migration-Guide)
 
-Do not mix APIs from other revisions into examples. Use official API documentation for behavior, the revision 185 tag for exact exports or implementation details, and the migration guide for removals and replacements. Label any mentioned third-party integration as non-core.
+For browser-only CDN loading, use one import map with every URL pinned to `@0.185.1`: WebGL maps `three` to `build/three.module.js`; WebGPU maps `three` and `three/webgpu` to `build/three.webgpu.js`, `three/tsl` to `build/three.tsl.js`, and `three/addons/` to `examples/jsm/`, all from the same CDN origin. The complete maps and renderer choice guidance are in `skills/threejs/SKILL.md`.
+
+Choose `WebGLRenderer` by default for conventional WebGL 2 applications. Choose `WebGPURenderer` for requirements that depend on TSL/node materials, compute, or its node-based post-processing; verify capabilities because WebGPURenderer may fall back to WebGL 2 and does not provide universal feature parity. Label any mentioned third-party integration as non-core.
+
+Do not mix APIs from other revisions into examples. Use current official documentation and the LLM index for conceptual guidance, the revision 185 tag and package exports for exact APIs and behavior, and the migration guide for removals and replacements.
 
 ## Validation
 

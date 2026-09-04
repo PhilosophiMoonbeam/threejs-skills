@@ -15,7 +15,21 @@ All APIs and engine internals below target Three.js 0.185.1 exactly.
 - `WebGLRenderer` requires WebGL 2 in 0.185.1. Its shader program is GLSL ES 3.00 even when a non-raw `ShaderMaterial` uses legacy source spellings through compatibility macros.
 - Set `glslVersion`; never put `#version` inside shader source.
 
-Official basis: [WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html), [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html), and [revision 185 WebGLProgram conversion](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLProgram.js#L800-L828).
+Official GLSL basis: [WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html), [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html), and [revision 185 WebGLProgram conversion](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLProgram.js#L800-L828).
+
+## NodeMaterial and TSL selection
+
+Use the closest built-in node material rather than the base `NodeMaterial` when a material model is already a fit:
+
+- `MeshBasicNodeMaterial` — unlit mesh color, maps, and environment response.
+- `MeshStandardNodeMaterial` — metalness/roughness PBR.
+- `MeshPhysicalNodeMaterial` — Standard plus physical extensions such as clearcoat, transmission, and sheen.
+- `LineBasicNodeMaterial` — line primitives.
+- `SpriteNodeMaterial` — sprites and their screen-facing quad behavior.
+
+These five classes are exported by `three/webgpu` in 0.185.1. Import TSL node functions from `three/tsl`; do not import node-material classes from that module. TSL graphs avoid GLSL string rewriting and can be emitted for the renderer backend, which is the practical reason to choose this path for WebGPU, compute, or code that must also work with the renderer's WebGL 2 fallback. See [official NodeMaterial guidance](https://threejs.org/docs/llms.txt#4-node-material-classes-for-webgputsl), [r185 node-material exports](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterials.js), and [NodeMaterial](https://threejs.org/docs/pages/NodeMaterial.html).
+
+Classic `ShaderMaterial` and `RawShaderMaterial` remain the WebGL GLSL path; do not mix their shader strings into a TSL graph.
 
 ## Minimal direct-screen ShaderMaterial
 
@@ -171,9 +185,9 @@ Sources: [r153→r154](https://github.com/mrdoob/three.js/wiki/Migration-Guide#1
 
 ## TSL, WebGPU, and compute boundary
 
-For NodeMaterial work, import renderer-facing classes from `three/webgpu` and node functions from `three/tsl`. Use `MeshStandardNodeMaterial`, assign nodes such as `colorNode`, `positionNode`, or `normalNode`, and let the node system emit backend code. In 0.185.1, use `packNormalToRGB()`/`unpackRGBToNormal()` rather than the renamed direction/color helpers. Use `positionLocal` when a `positionNode` builds on internal morphing, skinning, batching, and instancing transforms; use `positionGeometry` only to deliberately start from raw, pre-transformed geometry. See the [r184→r185 migration entry](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185).
+For NodeMaterial work, import renderer-facing classes from `three/webgpu` and node functions from `three/tsl`; the class choices are listed above. Assign nodes such as `colorNode`, `positionNode`, or `normalNode` and let the node system emit backend code. In 0.185.1, use `packNormalToRGB()`/`unpackRGBToNormal()` rather than the renamed direction/color helpers. In the `material.positionNode` hook, r185 does not make `positionLocal` reflect internal morphing, skinning, batching, or instancing updates; use `positionGeometry` when you need the pre-transformed geometry attribute, and explicitly compose any required internal transforms yourself. Outside that hook, `positionLocal` remains the node for the material's transformed local-position pipeline. See the [r184→r185 migration entry](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), [r185 NodeMaterial position setup](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterial.js#L763-L807), and [r185 position nodes](https://github.com/mrdoob/three.js/blob/r185/src/nodes/accessors/Position.js).
 
-For WebGL fragment-texture computation, import `GPUComputationRenderer` from `three/addons/misc/GPUComputationRenderer.js`; it manages float RGBA variables, dependencies, and ping-pong render targets. For WebGPU-capable compute, use TSL compute/storage nodes with `WebGPURenderer`; call `await renderer.init()` before synchronous `renderer.compute(computeNode)`. See [GPUComputationRenderer](https://threejs.org/docs/pages/GPUComputationRenderer.html), [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html), [Renderer.compute](https://threejs.org/docs/pages/Renderer.html#compute), and [TSL compute](https://threejs.org/docs/pages/TSL.html#compute).
+For WebGL fragment-texture computation, import `GPUComputationRenderer` from `three/addons/misc/GPUComputationRenderer.js`; it manages float RGBA variables, dependencies, and ping-pong render targets. For WebGPU-capable compute, use TSL compute/storage nodes with `WebGPURenderer`. `setAnimationLoop()` initializes the renderer before the loop callback; for on-demand compute, call `await renderer.init()` before synchronous `renderer.compute(computeNode)` (or use `computeAsync()`). See [GPUComputationRenderer](https://threejs.org/docs/pages/GPUComputationRenderer.html), [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html), [Renderer.compute](https://threejs.org/docs/pages/Renderer.html#compute), and [TSL compute](https://threejs.org/docs/pages/TSL.html#compute).
 
 ## Failures, diagnostics, and lifecycle
 

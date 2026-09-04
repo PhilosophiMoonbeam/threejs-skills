@@ -11,17 +11,17 @@ metadata:
 
 - Target exactly npm `three@0.185.1`. This package reports `THREE.REVISION === "185"` and uses the official [revision 185 source tag](https://github.com/mrdoob/three.js/tree/r185).
 - Pin core, addons, examples, and copied shader chunks to the same revision. Never combine files from different Three.js releases.
-- Treat current online documentation as conceptual unless the API is unchanged in the [revision 185 tagged source](https://github.com/mrdoob/three.js/tree/r185). The `three@0.185.1` package exports are authoritative for import paths: [revision 185 `package.json`](https://github.com/mrdoob/three.js/blob/r185/package.json).
+- Treat the current online documentation and [`llms.txt`](https://threejs.org/docs/llms.txt) as conceptual guidance; their examples may target a different release than this pinned package. For exact APIs and import paths, verify against the [revision 185 tagged source](https://github.com/mrdoob/three.js/tree/r185) and `three@0.185.1` package exports: [revision 185 `package.json`](https://github.com/mrdoob/three.js/blob/r185/package.json).
 - Do not introduce an API first added after revision 185. Route code written for another revision through the migration reference before adapting it.
 - Use Three.js core and official addons as Three.js APIs. Label every external engine, wrapper, control, loader, or effect as third-party.
 
 ## Required workflow
 
-1. Inspect the package lock, import map, or CDN URLs. Establish one `three@0.185.1` dependency and one module-loading strategy.
+1. Inspect the package lock, import map, or CDN URLs. Establish one exact `three@0.185.1` dependency and one module-loading strategy.
 2. Choose WebGL or WebGPU before selecting materials, custom shaders, post-processing, or render targets.
-3. State the scene units, world axes, camera convention, object ownership, and required browser/GPU capabilities.
+3. State the scene units, world axes, camera convention, object ownership, and required browser/GPU capabilities. If actual WebGPU is required, check its availability rather than treating a WebGL 2 fallback as equivalent.
 4. Inventory asset formats, compression, UV sets, color data, environment lighting, and asynchronous dependencies.
-5. Define resize, animation, input, loading cancellation, teardown, and route/component remount behavior.
+5. Define resize, animation, input, loading cancellation, teardown, and route/component remount behavior. For static scenes, prefer rendering on demand. [Rendering on demand](https://threejs.org/manual/en/rendering-on-demand.html)
 6. Read only the references selected by the routing table below. Each topic has one owner; do not invent a second convention.
 7. Start from the minimal renderer baseline, then add one domain at a time.
 8. Exercise the actual surface. Check the console, frame output, resize behavior, interaction, and teardown before optimizing.
@@ -38,6 +38,36 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 ```
 
+For browser-only CDN loading, choose one import map and pin every Three.js URL to `0.185.1`:
+
+```html
+<!-- WebGL -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+```
+
+```html
+<!-- WebGPU/TSL: map bare `three` to the WebGPU build because addons import it -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+```
+
+With npm or a bundler, install `three@0.185.1`; its package exports provide the same boundaries without an import map.
+
 For a WebGPU/TSL application, use the dedicated `three@0.185.1` exports:
 
 ```js
@@ -46,15 +76,18 @@ import { color, pass, vec3 } from 'three/tsl';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 ```
 
+TSL custom materials use node classes such as `MeshBasicNodeMaterial`, `MeshStandardNodeMaterial`, `MeshPhysicalNodeMaterial`, `LineBasicNodeMaterial`, and `SpriteNodeMaterial`, exported by `three/webgpu`; do not substitute WebGL GLSL materials for them. [r185 node-material exports](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterials.js)
+
 These entry points and the `three/addons/*` mapping are defined by the [`three@0.185.1` package exports](https://github.com/mrdoob/three.js/blob/r185/package.json); the WebGPU surface is listed in [revision 185 `Three.WebGPU.js`](https://github.com/mrdoob/three.js/blob/r185/src/Three.WebGPU.js).
 
 Choose once per rendering pipeline:
 
-- Choose `WebGLRenderer` for a conventional WebGL 2 application, GLSL `ShaderMaterial`/`RawShaderMaterial`, or the WebGL `EffectComposer` addon pipeline.
-- Choose `WebGPURenderer` when the requirements depend on TSL/node materials, compute, or the WebGPU post-processing pipeline. Await its asynchronous initialization where the selected 0.185.1 API requires it.
-- Do not assume renderer feature parity. Verify every material, texture format, pass, shader path, and capability against the chosen renderer.
+- Choose `WebGLRenderer` by default for conventional WebGL 2 applications, GLSL `ShaderMaterial`/`RawShaderMaterial`, or the WebGL `EffectComposer` addon pipeline.
+- Choose `WebGPURenderer` when requirements depend on TSL/node materials, compute, or the WebGPU post-processing pipeline. `setAnimationLoop()` initializes it before its first frame; for on-demand rendering or synchronous backend-dependent calls, `await renderer.init()` first. [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html)
+- If actual WebGPU is required, check `WebGPU.isAvailable()` from `three/addons/capabilities/WebGPU.js` and provide a deliberate fallback or unsupported-path error. `WebGPURenderer` can fall back to WebGL 2, which is not universal feature parity. [WebGPU capability check](https://threejs.org/docs/pages/WebGPU.html)
+- Verify every material, texture format, pass, shader path, and capability against the chosen renderer; do not assume feature parity.
 - Do not deep-import `three/src/...` or `three/examples/jsm/...`. Use `three`, `three/webgpu`, `three/tsl`, and `three/addons/...` only.
-- Do not mix CDN origins or versions. In an import map, map `three` and `three/addons/` to the same 0.185.1 distribution.
+- Do not mix CDN origins or versions. Map every selected core, WebGPU/TSL, and addon entry to the same `0.185.1` distribution.
 
 ## Minimal WebGL application baseline
 
@@ -122,15 +155,15 @@ Read the smallest set that owns the requested work. Return here to route an addi
 
 | Task signal | Read |
 |---|---|
-| scene, camera, renderer, scene graph, transforms, resize, render loop, disposal | [core rendering](references/core-rendering.md) |
+| scene, camera, renderer, scene graph, transforms, responsive sizing, render loop, rendering on demand, disposal, WebGPU availability or backend capabilities | [core rendering](references/core-rendering.md) |
 | primitives, `BufferGeometry`, attributes, morph data, lines, points, instancing | [geometry](references/geometry.md) |
 | built-in or PBR materials, transparency, blending, environment response | [materials](references/materials.md) |
-| lights, physically based intensity, shadows, IBL, helpers | [lighting and shadows](references/lighting-and-shadows.md) |
+| lights, physically based intensity, shadows, IBL, `RectAreaLight`, `RectAreaLightUniformsLib`, `RectAreaLightTexturesLib`, or LTC initialization, helpers | [lighting and shadows](references/lighting-and-shadows.md) |
 | color or data textures, UV channels, HDR, PMREM, render or depth targets | [textures and render targets](references/textures-and-render-targets.md) |
+| loading manager, `loadAsync`, GLTF/GLB, Draco, KTX2, other formats, and cleanup | [asset loading](references/asset-loading.md) |
 | clips, tracks, mixers, actions, skeletal animation, morph animation | [animation](references/animation.md) |
-| loading manager, `loadAsync`, GLTF/GLB, Draco, KTX2, other formats, cleanup | [asset loading](references/asset-loading.md) |
 | raycasting, pointer coordinates, selection, controls, event cleanup | [interaction and controls](references/interaction-and-controls.md) |
-| `ShaderMaterial`, `RawShaderMaterial`, GLSL, TSL/nodes, extension boundaries | [shaders and TSL](references/shaders-and-tsl.md) |
+| `ShaderMaterial`, `RawShaderMaterial`, GLSL, TSL/nodes, `NodeMaterial`, compute, extension boundaries | [shaders and TSL](references/shaders-and-tsl.md) |
 | `EffectComposer`, passes, WebGPU post-processing, resize, pass ordering | [post-processing](references/post-processing.md) |
 | old code, deprecated names, removed APIs, revision upgrade | [0.185.1 migration](references/0.185.1-migration.md) |
 
@@ -169,6 +202,7 @@ Whenever code, generated advice, an example, or a dependency targets an unknown 
 ## Official sources
 
 - [Three.js documentation](https://threejs.org/docs/)
+- [Three.js LLM index](https://threejs.org/docs/llms.txt)
 - [Three.js manual](https://threejs.org/manual/)
 - [Three.js revision 185 tagged source](https://github.com/mrdoob/three.js/tree/r185)
 - [Three.js revision 185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json)

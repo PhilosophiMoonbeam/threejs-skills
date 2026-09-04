@@ -12,7 +12,7 @@ returns an `Object3D` root and its `AnimationClip[]`.
 - Target Three.js 0.185.1 exactly.
 - Use `THREE.Timer`, not deprecated `Clock`. `Clock` was deprecated in r183;
   `Timer` is a core export in 0.185.1.
-  [revision 185 Clock](https://github.com/mrdoob/three.js/blob/r185/src/core/Clock.js)
+  [r182 → r183 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
   [revision 185 Timer](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js)
 - Connect the timer to `document` for Page Visibility handling, update it once at
   the start of each frame, then reuse that frame's delta and elapsed values.
@@ -200,8 +200,11 @@ additive animation for intentional layering.
 - Update each active mixer once with the frame delta; never sample the timer in
   separate subsystem loops.
 - Cache actions, bones, morph indices, and scratch objects outside the frame.
-- Stop actions before `uncacheAction`, `uncacheClip`, or `uncacheRoot`. Remove
-  mixer event listeners and dispose the timer during teardown.
+- Stop every action before `uncacheAction`, `uncacheClip`, or `uncacheRoot`.
+  `mixer.stopAllAction()` is convenient when one mixer owns one root. Uncache a
+  clip only after all actions using that clip have stopped, because it removes
+  every cached action for that clip.
+- Remove mixer event listeners and dispose the timer during teardown.
 - `frustumCulled` controls rendering, not animation evaluation. Render callbacks
   cannot detect an object becoming culled because callbacks run only for rendered
   objects. [revision 185 WebGLRenderer](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js)

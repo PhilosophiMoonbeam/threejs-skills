@@ -52,12 +52,23 @@ function onPointerMove(event) {
   pointerDirty = true;
 }
 
+function releasePointer(event) {
+  if (canvas.hasPointerCapture?.(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+}
+
 function onPointerLeave() {
   pointerDirty = false;
   updateHover(null);
 }
 
-function onPointerCancel() {
+function onPointerUp(event) {
+  releasePointer(event);
+}
+
+function onPointerCancel(event) {
+  releasePointer(event);
   pointerDirty = false;
   updateHover(null);
 }
@@ -82,6 +93,7 @@ canvas.addEventListener("pointermove", onPointerMove);
 canvas.addEventListener("pointerleave", onPointerLeave);
 canvas.addEventListener("pointercancel", onPointerCancel);
 canvas.addEventListener("pointerdown", onPointerDown);
+canvas.addEventListener("pointerup", onPointerUp);
 
 function render() {
   controls.update();
@@ -97,6 +109,7 @@ function disposeInteraction() {
   canvas.removeEventListener("pointerleave", onPointerLeave);
   canvas.removeEventListener("pointercancel", onPointerCancel);
   canvas.removeEventListener("pointerdown", onPointerDown);
+  canvas.removeEventListener("pointerup", onPointerUp);
   controls.dispose();
 }
 ```
@@ -158,15 +171,47 @@ A miss means the ray is parallel or the intersection lies behind it. Snapping `o
 
 ## Controls lifecycle
 
-Addon control constructors given a DOM element connect immediately. `enabled = false` suppresses input but leaves listeners installed. Use `disconnect()` for a temporary detach, `connect(element)` to attach again, and `dispose()` for permanent teardown. `connect()` requires the element in 0.185.1; this cutover is documented in [r174 → r175](https://github.com/mrdoob/three.js/wiki/Migration-Guide#174--175). Remove application-owned listeners and helpers separately.
+Addon control constructors given a DOM element connect immediately. `enabled = false` suppresses input but leaves listeners installed. Use `disconnect()` for a temporary detach, `connect(element)` to attach again, and `dispose()` for permanent teardown. `connect()` requires the element in 0.185.1; this cutover is documented in [r174 → r175](https://github.com/mrdoob/three.js/wiki/Migration-Guide#174--175). Remove application-owned listeners and helpers separately. A control's `dispose()` does not dispose its camera, scene objects, or materials.
 
 ### OrbitControls and MapControls
 
-Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Configure `target`, distance/zoom limits, polar and azimuth limits, and `enableRotate`, `enableZoom`, or `enablePan`. Damping and auto-rotation require `update()` every frame. Pass `deltaSeconds` to `update(deltaSeconds)` for refresh-rate-independent auto-rotation. MapControls follows the same update and lifecycle contract. See [OrbitControls](https://threejs.org/docs/pages/OrbitControls.html) and [MapControls](https://threejs.org/docs/pages/MapControls.html).
+Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Configure `target`, distance/zoom limits, polar and azimuth limits, and `enableRotate`, `enableZoom`, or `enablePan`. Damping requires `update()` every frame while it settles. Auto-rotation also requires `update()` every frame; pass `deltaSeconds` to `update(deltaSeconds)` for refresh-rate-independent auto-rotation. With no auto-rotation, the delta argument is optional. MapControls follows the same update and lifecycle contract. In a shared `renderer.setAnimationLoop` callback, derive one frame delta and pass that same value to every time-dependent subsystem. See [OrbitControls](https://threejs.org/docs/pages/OrbitControls.html), [MapControls](https://threejs.org/docs/pages/MapControls.html), and the [revision 185 OrbitControls source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/OrbitControls.js).
+
+### On-demand rendering
+
+Static scenes need not render continuously. Render once, then request a frame from
+the controls' stable `change` listener (and from resize or other scene changes).
+When damping is enabled, do not call `render` directly from that event: schedule
+one coalesced frame, call `controls.update()` inside it, and let subsequent
+`change` events schedule frames until the damping settles. Auto-rotation is
+time-dependent and therefore remains a continuous update. This is the official
+[on-demand rendering pattern](https://threejs.org/manual/en/rendering-on-demand.html).
+
+```js
+let renderRequestId = null;
+function render() {
+  renderRequestId = null;
+  controls.update();
+  renderer.render(scene, camera);
+}
+function requestRender() {
+  if (renderRequestId !== null) return;
+  renderRequestId = requestAnimationFrame(render);
+}
+controls.addEventListener("change", requestRender);
+window.addEventListener("resize", requestRender);
+requestRender();
+function disposeOnDemand() {
+  controls.removeEventListener("change", requestRender);
+  window.removeEventListener("resize", requestRender);
+  if (renderRequestId !== null) cancelAnimationFrame(renderRequestId);
+  renderRequestId = null;
+}
+```
 
 ### FlyControls and FirstPersonControls
 
-Both require `update(deltaSeconds)` every frame. Use `THREE.Timer`, call `timer.update(timestamp)`, then read `timer.getDelta()`; `Clock` was deprecated in r183 ([r182 → r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)). FlyControls exposes `movementSpeed`, `rollSpeed`, `autoForward`, and `dragToLook`.
+Both require `update(deltaSeconds)` every frame. Use `THREE.Timer`, call `timer.update(timestamp)`, then read `timer.getDelta()`; `Clock` was deprecated in r183 ([r182 → r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)). FlyControls exposes `movementSpeed`, `rollSpeed`, `autoForward`, and `dragToLook`. See the [revision 185 Timer source](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js) and [FlyControls source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/FlyControls.js).
 
 FirstPersonControls exposes `movementSpeed`, `lookSpeed`, `lookVertical`, vertical constraints, `dampingFactor`, and `lookAt()`. In 0.185.1 it uses pointer capture: press-drag offsets continuous look; left/right mouse move forward/backward; one/two touches move forward/backward; WASD/arrows plus E/Q provide internal movement. Do not call deprecated `handleResize()`. This interaction model arrived in [r183 → r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184); see the [revision 185 source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/FirstPersonControls.js).
 
@@ -206,10 +251,19 @@ const transform = new TransformControls(camera, renderer.domElement);
 const helper = transform.getHelper();
 scene.add(helper);
 transform.attach(selectedObject);
-transform.addEventListener("dragging-changed", ({ value }) => orbit.enabled = !value);
+function onDraggingChanged(event) {
+  orbit.enabled = !event.value;
+}
+transform.addEventListener("dragging-changed", onDraggingChanged);
 ```
 
-Use `attach()`, `detach()`, `setMode()`, `setSpace()`, snapping properties, and `setSize()`. If the helper uses a non-default layer, configure `transform.getRaycaster().layers` to match. On teardown, detach, remove the helper, and call `dispose()`. Adding the controls object itself to the scene is obsolete since [r168 → r169](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169); see [TransformControls revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/TransformControls.js).
+Use `attach()`, `detach()`, `setMode()`, `setSpace()`, snapping properties, and `setSize()`. If the helper uses a non-default layer, configure `transform.getRaycaster().layers` to match. On teardown, remove the application listener, detach, remove the helper, and call `dispose()`. Adding the controls object itself to the scene is obsolete since [r168 → r169](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169); see [TransformControls revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/TransformControls.js).
+```js
+transform.removeEventListener("dragging-changed", onDraggingChanged);
+transform.detach();
+scene.remove(helper);
+transform.dispose();
+```
 
 ## Performance
 

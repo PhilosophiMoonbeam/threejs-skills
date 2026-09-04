@@ -17,14 +17,16 @@ for light design, and `shaders-and-tsl` for shader tutorials.
   do not use removed `encoding` or gamma APIs.
   ([color management](https://threejs.org/manual/en/color-management.html),
   [r151→r152](https://github.com/mrdoob/three.js/wiki/Migration-Guide#151--152))
+- For `WebGLRenderer`, use built-in materials from `three`. For `WebGPURenderer`, use
+  `MeshBasicNodeMaterial`, `MeshStandardNodeMaterial`, `MeshPhysicalNodeMaterial`,
+  `LineBasicNodeMaterial`, or `SpriteNodeMaterial` from `three/webgpu`; import TSL nodes from
+  `three/tsl`. Do not substitute WebGL `ShaderMaterial` for a WebGPU node material.
+  ([r170→r171](https://github.com/mrdoob/three.js/wiki/Migration-Guide#170--171),
+  [revision 185 node material exports](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterials.js))
 - Treat `Material.type` as read-only serialization/type metadata. Test with `isMeshStandardMaterial`
   flags or `instanceof`; use `needsUpdate` or `customProgramCacheKey()` for shader variants.
   ([`Material.type`](https://threejs.org/docs/pages/Material.html#type),
   [r169→r170](https://github.com/mrdoob/three.js/wiki/Migration-Guide#169--170))
-- Physically correct lighting is the current behavior; do not restore legacy arbitrary light scaling.
-  r181 also changed indirect specular energy and PMREM appearance.
-  ([r154→r155](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155),
-  [r180→r181](https://github.com/mrdoob/three.js/wiki/Migration-Guide#180--181))
 
 ## Select a material
 
@@ -44,6 +46,11 @@ for light design, and `shaders-and-tsl` for shader tutorials.
 | `SpriteMaterial` | camera-facing sprites | used with `Sprite` |
 | `ShadowMaterial` | transparent received-shadow overlays | tune opacity and depth ordering |
 
+The WebGPU counterparts are `MeshBasicNodeMaterial`, `MeshStandardNodeMaterial`,
+`MeshPhysicalNodeMaterial`, `LineBasicNodeMaterial`, and `SpriteNodeMaterial`. They are
+NodeMaterials, not aliases for the WebGL built-ins; use `three/webgpu` and compose custom behavior
+with TSL from `three/tsl`.
+
 `linewidth`, `linecap`, and `linejoin` only affect `SVGRenderer` in 0.185.1. Use the line add-ons for
 wide GPU lines. ([revision 185 `LineBasicMaterial`](https://github.com/mrdoob/three.js/blob/r185/src/materials/LineBasicMaterial.js))
 Measure actual cost: maps, lights, shadows, transparency, overdraw, and enabled Physical lobes matter
@@ -62,16 +69,22 @@ const orm = await loader.loadAsync('orm.webp'); // R=AO, G=roughness, B=metalnes
 
 const geometry = new THREE.SphereGeometry(1, 64, 32);
 geometry.setAttribute('uv1', geometry.getAttribute('uv').clone());
-orm.channel = 1; // aoMap reads uv1; the other uses may require their own Texture clones
+
+const aoMap = orm.clone();
+aoMap.channel = 1; // AO conventionally uses the second UV set
+const roughnessMap = orm.clone();
+roughnessMap.channel = 0;
+const metalnessMap = orm.clone();
+metalnessMap.channel = 0;
 
 const material = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   map: baseColor,
-  aoMap: orm,
+  aoMap,
   roughness: 1,
-  roughnessMap: orm,
+  roughnessMap,
   metalness: 1,
-  metalnessMap: orm,
+  metalnessMap,
 });
 
 const environment = await new HDRLoader().loadAsync('studio.hdr');
@@ -104,37 +117,44 @@ slots, clone the texture and set each clone's `channel`; texture clones share th
 Enable only effects the asset needs. `MeshPhysicalMaterial` adds cost as features become active.
 ([revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/materials/MeshPhysicalMaterial.js))
 
-| Effect | Scalar/property rule | Packed map channel |
+| Effect | Scalar/property rule | Map channel |
 |---|---|---|
-| clearcoat | `clearcoat`; separate roughness and normal layer | intensity R, roughness G, normal RGB |
-| sheen | `sheen`, `sheenColor`, `sheenRoughness` | color RGB (sRGB), roughness A |
-| transmission/volume | keep `opacity = 1`; use `transmission`, `thickness`, attenuation | transmission R, thickness G |
-| dielectric specular | `ior`, `specularIntensity`, `specularColor`; no effect at full metalness | intensity A, color RGB (sRGB) |
-| iridescence | strength, IOR, and thickness range | strength R, thickness G |
-| anisotropy | strength and tangent-space rotation | direction RG, strength B |
+| clearcoat | `clearcoat`; separate roughness and normal layer | `clearcoatMap` R, `clearcoatRoughnessMap` G, `clearcoatNormalMap` RGB |
+| sheen | `sheen`, `sheenColor`, `sheenRoughness` | `sheenColorMap` RGB (sRGB), `sheenRoughnessMap` A |
+| transmission | `transmission`; keep `opacity = 1` | `transmissionMap` R |
+| volume | `thickness`, `attenuationDistance`, `attenuationColor` | `thicknessMap` G; attenuation has no map |
+| dielectric specular | `ior`, `specularIntensity`, `specularColor`; no effect at full metalness | `specularIntensityMap` A, `specularColorMap` RGB (sRGB) |
+| iridescence | strength, IOR, and thickness range | `iridescenceMap` R, `iridescenceThicknessMap` G |
+| anisotropy | strength and tangent-space rotation | `anisotropyMap` R/G direction, B strength |
 | dispersion | `0` disables it; meaningful with transmission | no map; extra spectral cost |
 
 For physical glass, prefer transmission rather than low opacity: use `metalness: 0`, nonzero
 `transmission`, suitable `ior` and roughness, and an environment. Give closed volumes nonzero
-`thickness`; leave thin surfaces at `0`.
+`thickness`; leave thin surfaces at `0`. `attenuationDistance` is in mesh/world-space units.
 ([`transmission`](https://threejs.org/docs/pages/MeshPhysicalMaterial.html#transmission),
+[`thickness`](https://threejs.org/docs/pages/MeshPhysicalMaterial.html#thickness),
+[`attenuationDistance`](https://threejs.org/docs/pages/MeshPhysicalMaterial.html#attenuationDistance),
 [`dispersion`](https://threejs.org/docs/pages/MeshPhysicalMaterial.html#dispersion))
 
 ## Map roles, channels, and color spaces
 
 | Slots | Sampled data | `texture.colorSpace` |
 |---|---|---|
-| `map`, `emissiveMap`, `sheenColorMap`, `specularColorMap` | displayed/color RGB | `THREE.SRGBColorSpace` |
-| HDR/EXR environment and `lightMap` | scene-referred light RGB | `THREE.LinearSRGBColorSpace` |
+| `map`, `emissiveMap`, `sheenColorMap`, `specularMap`, `specularColorMap` | displayed/color RGB | `THREE.SRGBColorSpace` |
+| `envMap` and HDR/EXR environment textures | scene-referred radiance | `THREE.LinearSRGBColorSpace` for linear radiance |
+| `lightMap` | baked illuminance; requires a second UV set | `THREE.LinearSRGBColorSpace` when authored as linear data |
 | `roughnessMap` G, `metalnessMap` B, `aoMap` R, `alphaMap` G | scalar data | `THREE.NoColorSpace` |
-| normal, bump, displacement, transmission, thickness maps | vectors/heights/scalars | `THREE.NoColorSpace` |
-| anisotropy, clearcoat, iridescence, sheen-roughness maps | packed physical data | `THREE.NoColorSpace` |
+| `normalMap`, `bumpMap`, `displacementMap`, `transmissionMap`, `thicknessMap` | vectors, heights, or scalars | `THREE.NoColorSpace` |
+| `anisotropyMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `sheenRoughnessMap`, `specularIntensityMap` | packed physical data | `THREE.NoColorSpace` |
 
-Color constants and CSS-style color inputs are interpreted as sRGB and converted into the working
-space. Do not tag data maps as sRGB. Do not manually convert an HDR texture loaded by `HDRLoader`;
-it is Linear-sRGB in 0.185.1.
+`lightMap` is not automatically linear merely because it is a light map: annotate it according to
+the data actually stored. Linear HDR/EXR light maps use `LinearSRGBColorSpace`; an encoded color
+texture must use its encoded color space. Color constants and CSS-style color inputs are interpreted
+as sRGB and converted into the working space. Do not tag data maps as sRGB. `HDRLoader` produces a
+Linear-sRGB texture in 0.185.1.
 ([color-space roles](https://threejs.org/manual/en/color-management.html#roles-of-color-spaces),
-[revision 185 `HDRLoader`](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js))
+[revision 185 `HDRLoader`](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js),
+[revision 185 `MeshStandardMaterial`](https://github.com/mrdoob/three.js/blob/r185/src/materials/MeshStandardMaterial.js))
 
 UV attributes are named `uv`, `uv1`, `uv2`, and `uv3`; `Texture.channel` values `0`–`3` select them.
 For a generated second set, use `geometry.setAttribute('uv1', geometry.getAttribute('uv').clone())`
@@ -150,7 +170,8 @@ Choose one primary transparency strategy:
 - Sorting-resistant coverage: `alphaHash = true`; accept noise, preferably with TAA.
 - MSAA edges: `alphaToCoverage = true` only when the render target/context is multisampled.
 - Smooth compositing: enable `transparent = true` and use `opacity < 1` and/or meaningful texture
-  alpha; expect sorting and overdraw. Without transparent mode, 0.185.1 forces fragment alpha to `1`.
+  alpha; expect sorting and overdraw. `alphaMap` samples the green channel. Without transparent
+  mode, 0.185.1 forces fragment alpha to `1`.
   ([revision 185 opaque-fragment chunk](https://github.com/mrdoob/three.js/blob/r185/src/renderers/shaders/ShaderChunk/opaque_fragment.glsl.js))
 - Physical glass: `MeshPhysicalMaterial.transmission` with `opacity = 1`.
 
@@ -169,45 +190,45 @@ HTML compositing because premultiplied-alpha handling changed.
 
 ## Environment response
 
-- `scene.environment` supplies the default IBL for Standard/Physical materials; an explicit
-  `material.envMap` overrides it. PBR environment maps are PMREM-filtered internally.
-- Tune scene IBL with `scene.environmentIntensity` and `scene.environmentRotation`.
-- Tune an explicit PBR map with `material.envMapIntensity` and `material.envMapRotation`.
+- In the built-in WebGL path, `scene.environment` is the default IBL for Standard/Physical and
+  Lambert/Phong materials; an explicit `material.envMap` prevents that inheritance. `MeshBasicMaterial`
+  responds only to its explicit `envMap`.
+- Standard/Physical environment maps use the renderer's PMREM path. Explicit Lambert/Phong `envMap`
+  textures are not automatically PMREM-filtered in WebGL; provide an appropriate prefiltered map when
+  needed. Tune explicit maps with `material.envMapIntensity` and `material.envMapRotation`.
+- Tune inherited scene IBL with `scene.environmentIntensity` and `scene.environmentRotation`.
   `envMapIntensity` does not attenuate `scene.environment` since r163.
 - Background appearance is independent: use `scene.backgroundIntensity` and
   `scene.backgroundRotation`. r184 aligned environment/background rotations with object rotations.
   ([r162→r163](https://github.com/mrdoob/three.js/wiki/Migration-Guide#162--r163),
   [r183→r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184),
-  [revision 185 `Scene`](https://github.com/mrdoob/three.js/blob/r185/src/scenes/Scene.js))
-- `MeshBasicMaterial` responds only to its explicit `envMap`; tune it with `reflectivity`, `combine`,
-  and `refractionRatio`.
-- `MeshLambertMaterial` and `MeshPhongMaterial` also support `envMapIntensity` for an explicit
-  `envMap`. Without one, they inherit `scene.environment` and use `scene.environmentIntensity`.
-  ([revision 185 Lambert](https://github.com/mrdoob/three.js/blob/r185/src/materials/MeshLambertMaterial.js),
-  [revision 185 Phong](https://github.com/mrdoob/three.js/blob/r185/src/materials/MeshPhongMaterial.js),
-  [revision 185 WebGL uniforms](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLMaterials.js))
+  [revision 185 `Scene`](https://github.com/mrdoob/three.js/blob/r185/src/scenes/Scene.js),
+  [revision 185 WebGL programs](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js))
+- For WebGPU NodeMaterials, use the renderer's node environment path; do not assume a WebGL
+  `envMap` or WebGL shader define is portable.
 
 ## Mutation, cloning, and disposal
 
 - Change uniform-like values directly: `material.color.set(...)`, `roughness`, and `opacity` do not
   require `material.needsUpdate`.
-- Swapping non-null textures needs no update only when shader-keyed characteristics are unchanged.
-  Set `material.needsUpdate = true` when the replacement changes `Texture.channel`, normal-map
-  representation, or video-texture decoding.
-  ([revision 185 program parameters](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js),
-  [revision 185 renderer](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js))
-- Set `needsUpdate = true` when program features change: map presence (`null`↔texture), transparency,
-  alpha-test mode, fog/vertex-color features, flat shading, or shader source. Keep it out of hot loops;
-  it increments `version` and can compile another program.
+- Swapping a non-null texture needs no material update only when the shader-keyed characteristics are
+  unchanged. Set `material.needsUpdate = true` when the replacement changes `Texture.channel`,
+  normal-map representation/format, or video-texture decoding.
+  ([revision 185 program parameters](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js))
+- Set `needsUpdate = true` when a shader feature changes: map or `envMap` presence (`null`↔texture),
+  activation of a Physical lobe or map, transparency, alpha-test mode, fog/vertex-color features,
+  flat shading, shadow-map variant, or shader source. Keep it out of hot loops; it increments
+  `version` and can compile another program.
   ([updating materials](https://threejs.org/manual/en/how-to-update-things.html#materials),
-  [`needsUpdate`](https://threejs.org/docs/pages/Material.html#needsUpdate))
+  [`needsUpdate`](https://threejs.org/docs/pages/Material.html#needsUpdate),
+  [revision 185 program parameters](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js))
 - Set `texture.needsUpdate = true` after changing texture source data; changing dimensions, format,
   or type after first use requires disposal and a new texture.
-- `material.clone()` copies value objects such as colors but shares texture references. Clone a texture
-  only when its transform/channel state must diverge.
+- `material.clone()` copies value objects such as colors but shares texture references. Clone a
+  texture only when its transform/channel state must diverge.
 - `material.dispose()` releases material/program resources only. It does not dispose referenced
-  textures or geometry and does not remove meshes. Dispose every owned texture and geometry once,
-  after all users have finished; never dispose a shared resource early.
+  textures or geometry and does not remove meshes. Dispose every owned texture (including channel
+  clones) and geometry once, after all users have finished; never dispose a shared resource early.
   ([revision 185 material copy/dispose](https://github.com/mrdoob/three.js/blob/r185/src/materials/Material.js),
   [disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html))
 

@@ -9,8 +9,9 @@ owners.
 Core classes import from `three`. Example addons import through `three/addons/...`.
 All APIs and behavior below target Three.js 0.185.1 exactly.
 ## Decisions and invariants
-- A `BufferGeometry` is attribute streams plus an optional index. Attribute counts
-  must describe the same vertex domain.
+- A `BufferGeometry` is attribute streams plus an optional index. Ordinary vertex
+  attributes (`position`, normals, UVs, and colors) must describe the same vertex
+  domain; `InstancedBufferGeometry` may additionally carry per-instance attributes.
 - `position` has item size 3; `normal` 3; `uv`, `uv1`, `uv2`, and `uv3` have item
   size 2 and correspond to texture channel indices 0–3.
 - Indexed triangles reuse vertices; every three index values form one triangle.
@@ -19,8 +20,10 @@ All APIs and behavior below target Three.js 0.185.1 exactly.
   must cover every index or vertex exactly once. `start` and `count` address indices
   on indexed geometry and vertices otherwise.
 - Bounds are not automatically refreshed after vertex or instance mutation.
-- Choose typed-array widths deliberately: `Uint16Array` indices address at most
-  65,536 vertices; use `Uint32Array` beyond that.
+- Index values in a `Uint16Array` are limited to `0..65535` (65,536 addressable
+  vertices); an index of `65536` or greater requires `Uint32Array` indices. `setIndex`
+  auto-selects `Uint16Array` or `Uint32Array` when passed a regular JavaScript array.
+  [revision 185 BufferGeometry source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L311-L325)
 
 ## Built-in generators
 Common full positional signatures, where positional detail is useful:
@@ -94,6 +97,10 @@ remove data with `setAttribute`/`deleteAttribute`, `setIndex`, and
 `clearGroups`. Use `toNonIndexed()` only when duplicated per-corner data is needed;
 it allocates a new geometry.
 
+`BufferAttribute` requires a typed array; convenience classes such as
+`Float32BufferAttribute` convert regular JavaScript arrays to typed storage.
+[BufferAttribute constructor](https://threejs.org/docs/pages/BufferAttribute.html#constructor)
+
 For compact color storage, normalization is required:
 ```js
 const bytes = new Uint8Array([255, 64, 0, 0, 128, 255]);
@@ -104,6 +111,7 @@ With `normalized: true`, attribute getters/setters expose normalized values whil
 `color`. [BufferAttribute revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferAttribute.js)
 
 ## Mutation, update ranges, and bounds
+
 Set usage before first render; usage cannot be changed after first use. Update ranges
 count array components, not vertices. Never use the removed singular `updateRange`.
 ```js
@@ -112,21 +120,26 @@ position.setUsage(THREE.DynamicDrawUsage);
 position.setXYZ(2, 1.25, 1, 0);
 position.addUpdateRange(2 * position.itemSize, position.itemSize);
 position.needsUpdate = true;
-geometry.computeVertexNormals();
-geometry.getAttribute("normal").needsUpdate = true;
+geometry.computeVertexNormals(); // also marks the generated normal attribute
 geometry.computeBoundingBox();
 geometry.computeBoundingSphere();
 ```
+Direct writes to an attribute's `.array` follow the same `needsUpdate` rule.
+Changing positions invalidates any existing bounds: recompute the box and sphere
+before culling, raycasting, or helpers use them. `computeVertexNormals()` updates
+and marks the normal attribute; do not increment its version a second time.
 Call `clearUpdateRanges()` only when resetting ranges manually; renderers consume
 and clear uploaded ranges. For interleaved attributes, usage, ranges, and
 `needsUpdate` belong to the shared `InterleavedBuffer`. Morph attribute data cannot
 be changed after first render; dispose the geometry and create a replacement.
-[Update-range API](https://threejs.org/docs/pages/BufferAttribute.html) |
-[r158→r159 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#r158--r159)
+[BufferGeometry update manual](https://threejs.org/manual/en/how-to-update-things.html) |
+[BufferAttribute update-range API](https://threejs.org/docs/pages/BufferAttribute.html) |
+[revision 185 BufferGeometry source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js)
 
-`applyMatrix4`, `rotateX/Y/Z`, `translate`, `scale`, and `center` mutate vertices.
-Three.js 0.185.1 serializes transformed generated geometries as actual buffer data rather than
-stale constructor parameters. [r185 transform change](https://github.com/mrdoob/three.js/pull/33641)
+`applyMatrix4`, `rotateX/Y/Z`, `translate`, `scale`, and `center` mutate vertex
+data; they mark affected attributes and refresh bounds that already exist. Use
+`Object3D` transforms for ordinary runtime motion; these are one-time CPU edits.
+[BufferGeometry#applyMatrix4, revision 185](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L376-L424)
 
 ## Lines, points, and derived geometry
 ```js
@@ -166,8 +179,9 @@ scene.add(instances);
 ```
 After runtime transform changes, mark `instanceMatrix`, then recompute the sphere
 before culling or raycasting; recompute the box when application code uses it.
-`Raycaster` intersections report `instanceId`. Instance matrices must not encode a
-negative scale. [InstancedMesh revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/objects/InstancedMesh.js)
+After runtime color changes, mark `instanceColor.needsUpdate`. `Raycaster`
+intersections report `instanceId`. Instance matrices must not encode a negative
+scale. [InstancedMesh revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/objects/InstancedMesh.js)
 
 For custom per-instance attributes, use `InstancedBufferGeometry` and a material
 that consumes them. Set `instanceCount` explicitly:
@@ -187,8 +201,7 @@ const dots = new THREE.Mesh(instanced, new THREE.ShaderMaterial({
 dots.frustumCulled = false; // Shader offsets are absent from CPU bounds.
 scene.add(dots);
 ```
-Do not call `InstancedBufferGeometry.copy()` with a plain `BufferGeometry`; its copy
-contract includes `instanceCount`. [revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/core/InstancedBufferGeometry.js)
+[InstancedBufferGeometry revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/core/InstancedBufferGeometry.js)
 
 ## Utilities and tangents
 ```js

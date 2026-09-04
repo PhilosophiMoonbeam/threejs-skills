@@ -42,12 +42,14 @@ and [revision 185 HDRLoader source](https://github.com/mrdoob/three.js/blob/r185
 
 `loader.load(url, onLoad, onProgress, onError)` starts asynchronous work. The result belongs to
 `onLoad`; errors belong to `onError`. Inherited `loadAsync(url, onProgress)` resolves when that
-loader calls its native `onLoad` and preserves its native error path; it does not guarantee that
-placeholder textures or other dependent requests have settled. Do not wrap `load()` in a new promise.
+loader invokes its native `onLoad` and preserves its native error path. For compound loaders such
+as `GLTFLoader`, that completion includes the dependencies managed by that loader; it does not
+settle requests that the application enqueues separately (for example, an `MTLLoader` preload).
+Do not wrap `load()` in a new promise.
 
 `TextureLoader.load()` is a special immediate-placeholder API: it returns a `Texture` before its
-image arrives. It is not synchronous. Since r184, `FileLoader.load()` and
-`ImageBitmapLoader.load()` return nothing; use `onLoad` or `loadAsync()` for their results.
+image arrives. It is not synchronous. Since r184, `FileLoader.load()` and `ImageBitmapLoader.load()`
+return nothing; use `onLoad` or `loadAsync()` for their results.
 [revision 185 Loader.loadAsync](https://github.com/mrdoob/three.js/blob/r185/src/loaders/Loader.js) ·
 [183→184 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184)
 
@@ -76,10 +78,30 @@ item reports `onError` and is then ended; consequently `onLoad` still fires afte
 [revision 185 manager counters](https://github.com/mrdoob/three.js/blob/r185/src/loaders/LoadingManager.js) ·
 [revision 185 GLTFLoader accounting](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/GLTFLoader.js)
 
-For a timeout, give the operation a dedicated manager, race its `loadAsync()` promise with a timer,
-and call `manager.abort()` on timeout. Clear the timer in `finally`. Abort works only for participating
-loaders and browsers supporting `AbortSignal.any()`; it does not stop CPU parsing already in progress.
+For a timeout, pass the operation's dedicated manager explicitly, race its `loadAsync()` promise with a
+timer, and call that manager's `abort()` on timeout. The manager must belong only to this load batch;
+never pass a shared manager, or a timeout could cancel unrelated requests. Clear the timer in `finally`.
+Abort works only for participating loaders and browsers supporting `AbortSignal.any()`; it does not stop
+CPU parsing already in progress.
 [revision 185 LoadingManager.abort](https://github.com/mrdoob/three.js/blob/r185/src/loaders/LoadingManager.js)
+
+```js
+async function loadWithTimeout(loader, manager, url, timeoutMs) {
+  let timerId;
+  const timeout = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      manager.abort();
+      reject(new Error(`Timed out loading ${url}`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([loader.loadAsync(url), timeout]);
+  } finally {
+    clearTimeout(timerId);
+  }
+}
+```
 
 ## Minimal glTF/GLB pattern with compression
 
@@ -112,12 +134,18 @@ ktx2Loader.dispose();
 
 `KHR_draco_mesh_compression` requires `setDRACOLoader`; `KHR_texture_basisu` requires
 `setKTX2Loader`; `EXT_meshopt_compression` and `KHR_meshopt_compression` require
-`setMeshoptDecoder`. In 0.185.1, KTX2 resolves its packaged Basis JS/WASM relative to the addon.
-Usually omit `setTranscoderPath()`. If deployment requires one, host assets from the exact
-`three@0.185.1` package. Never pair `three@0.185.1` code with another package version's
-decoder assets. `detectSupport(renderer)` is synchronous; WebGPU requires
-`await renderer.init()` first, not deprecated `detectSupportAsync()`.
+`setMeshoptDecoder`. In 0.185.1, `KTX2Loader` defaults to the packaged Basis JS/WASM files
+resolved relative to the addon module (`examples/jsm/libs/basis`), so normally omit
+`setTranscoderPath()`. If a bundler or static host does not preserve those files, copy
+`basis_transcoder.js` and `basis_transcoder.wasm` from the exact `three@0.185.1` package and
+set the path to that directory. Never pair `three@0.185.1` code with another package version's
+decoder assets. `detectSupport(renderer)` is synchronous; WebGPU requires `await renderer.init()`
+first, not deprecated `detectSupportAsync()`.
+Reuse one `DRACOLoader` and `KTX2Loader` where possible; use `setWorkerLimit()` to keep decoder
+workers within the application's CPU budget, and dispose each loader only after its final load.
 [revision 185 compressed-glTF example](https://github.com/mrdoob/three.js/blob/r185/examples/webgl_loader_gltf_compressed.html) ·
+[revision 185 DRACOLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/DRACOLoader.js) ·
+[revision 185 GLTFLoader compression extensions](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/GLTFLoader.js) ·
 [revision 185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
 
 ## HDR and EXR environments
@@ -152,12 +180,16 @@ scene.background = null;
 hdr.dispose();
 ```
 
-Use `EXRLoader` identically for OpenEXR transport. HDR/EXR are linear color data; do not label
-normal, roughness, metalness, or other data maps `LinearSRGBColorSpace`. Such maps use
-`NoColorSpace` (the default); color/albedo/emissive PNG/JPEG inputs use `SRGBColorSpace`.
+Use `EXRLoader` identically for OpenEXR transport. HDR/EXR loaders default to
+`LinearSRGBColorSpace` for scene-referred HDR; do not label normal, roughness, metalness, or other
+data maps `LinearSRGBColorSpace`. Such maps use `NoColorSpace` (the default), while color/albedo/
+emissive PNG/JPEG inputs use `SRGBColorSpace`. If an HDR/EXR file is deliberately a data map,
+override its color space to `NoColorSpace` before its first upload.
 For WebGL, keep the PMREM render target because it owns the allocation. For WebGPU, keep the
 HDR/EXR source texture until every environment or background reference is retired.
 [Color-management input spaces](https://threejs.org/manual/en/color-management.html#input-color-space) ·
+[revision 185 HDRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js) ·
+[revision 185 EXRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/EXRLoader.js) ·
 [revision 185 PMREM return type](https://github.com/mrdoob/three.js/blob/r185/src/extras/PMREMGenerator.js) ·
 [revision 185 WebGPU retained environment](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_loader_gltf.html)
 
