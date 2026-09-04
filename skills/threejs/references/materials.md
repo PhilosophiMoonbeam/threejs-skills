@@ -58,13 +58,31 @@ more than a fixed material-name ranking.
 
 ## Canonical PBR pattern
 
-Assume an existing lit scene and successfully loaded, owned `baseColor` and `orm` textures: sRGB base color and non-color packed R=AO/G=roughness/B=metalness data. The textures topic owns acquisition and annotation; all slots here use the same UV set.
+This WebGL example loads its own inputs and adds a PBR sphere to an existing `scene`. Host the three asset URLs; the owner must remain alive until setup settles. It owns the new mesh and textures and requires an initially unused `scene.environment`. For cancellation or shared assets, use the asset-loading topic in the skill index.
 
-```javascript
+<!-- check: pbr-surface -->
+```js
 import * as THREE from 'three';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
+
+const loader = new THREE.TextureLoader();
+const results = await Promise.allSettled([
+  loader.loadAsync('/assets/base-color.png'),
+  loader.loadAsync('/assets/orm.png'),
+  new HDRLoader().loadAsync('/assets/studio.hdr'),
+]);
+const failure = results.find(result => result.status === 'rejected');
+if (failure) {
+  for (const result of results) if (result.status === 'fulfilled') result.value.dispose();
+  throw failure.reason;
+}
+const [baseColor, orm, environment] = results.map(result => result.value);
+baseColor.colorSpace = THREE.SRGBColorSpace;
+// ORM stays NoColorSpace: R=AO, G=roughness, B=metalness; all slots share UVs.
+environment.mapping = THREE.EquirectangularReflectionMapping;
+scene.environment = environment; // WebGL automatically preprocesses PBR environments.
 
 const geometry = new THREE.SphereGeometry(1, 64, 32);
-
 const material = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   map: baseColor,
@@ -74,18 +92,21 @@ const material = new THREE.MeshStandardMaterial({
   metalness: 1,
   metalnessMap: orm,
 });
-
 const mesh = new THREE.Mesh(geometry, material);
 scene.add(mesh);
 
 function disposeSurface() {
   scene.remove(mesh);
+  if (scene.environment === environment) scene.environment = null;
   geometry.dispose();
   material.dispose();
   baseColor.dispose();
   orm.dispose(); // Shared by three slots, owned once.
+  environment.dispose();
 }
 ```
+
+The setup includes the input annotations needed to use the material directly; texture sampling and explicit environment preprocessing remain owned by the textures topic. [r185 HDRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js), [r185 WebGL environments](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLEnvironments.js), [color management](https://threejs.org/manual/en/color-management.html)
 
 Reuse one packed texture when slots share UV and sampler state. For different UV sets or transforms, use the texture-cloning rules in the textures topic.
 

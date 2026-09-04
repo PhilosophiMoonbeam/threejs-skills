@@ -117,7 +117,26 @@ linear, and Display-P3 metadata is preserved, while unspecified/unsupported meta
 `NoColorSpace`. Keep that result unless the asset metadata is known to be wrong. Reuse one
 configured loader and release its workers afterward.
 
-Decoder setup, capability detection, packaged transcoder paths, and worker lifetime belong to asset loading; return to the skill index for that topic. [r185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
+For a standalone KTX2 texture, this helper owns a one-load decoder pool; the caller owns the returned texture and calls `texture.dispose()` after its final consumer. Keep the renderer alive until the promise settles. Use a shared loader for a batch. The default packaged transcoder files must be served; custom paths and glTF compression wiring belong to asset loading in the skill index.
+
+<!-- check: standalone-ktx2 -->
+```js
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+
+async function loadKTX2Texture(renderer, url) {
+  if (renderer.isWebGPURenderer) await renderer.init();
+  const loader = new KTX2Loader();
+  try {
+    loader.detectSupport(renderer);
+    return await loader.loadAsync(url);
+  } finally {
+    loader.dispose(); // Runs after load completion or failure, not immediately after starting.
+  }
+}
+// const texture = await loadKTX2Texture(renderer, '/assets/material.ktx2');
+```
+
+Keep the returned color-space metadata. `detectSupport()` must follow WebGPU initialization; the packaged transcoder defaults are revision-specific. [r185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
 
 ## HDR, EXR, environments, and PMREM
 
@@ -137,8 +156,31 @@ scene.background = environment;
 `WebGLRenderer` internally PMREM-filters supported equirectangular/cube environments for physically based materials; keeping the source texture as `scene.background` preserves resolution.
 [Migration r129→r130](https://github.com/mrdoob/three.js/wiki/Migration-Guide#129--130)
 
-For manual WebGL PMREM, `pmrem.fromEquirectangular(source)` returns a render target. Retain it as owner, use `.texture`, then dispose target and generator.
-Do not lose the target handle. See [`PMREMGenerator`](https://threejs.org/docs/pages/PMREMGenerator.html).
+For explicit WebGL PMREM ownership, use this alternative to the source-texture assignment above. Start with an existing `WebGLRenderer` and an unused `scene.environment`; keep both alive until the load settles. This source is used only for preprocessing, so it can be disposed afterward. If also used as a background, retain it until that consumer retires.
+
+<!-- check: pmrem-environment -->
+```js
+import * as THREE from 'three';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
+
+const source = await new HDRLoader().loadAsync('/assets/studio.hdr');
+const pmrem = new THREE.PMREMGenerator(renderer);
+let envTarget;
+try {
+  envTarget = pmrem.fromEquirectangular(source);
+} finally {
+  source.dispose();
+  pmrem.dispose();
+}
+scene.environment = envTarget.texture;
+
+function disposeEnvironment() {
+  if (scene.environment === envTarget.texture) scene.environment = null;
+  envTarget.dispose(); // The target owns the allocation, not just its exposed texture.
+}
+```
+
+`fromEquirectangular()` returns a render target whose lifetime extends beyond the generator's. [r185 PMREMGenerator](https://github.com/mrdoob/three.js/blob/r185/src/extras/PMREMGenerator.js)
 
 With `WebGPURenderer`, assign the HDR/EXR source directly and retain it until every environment/background consumer is retired; let the renderer preprocess it. Do not pass a WebGL PMREM target into that path. [r185 WebGPU environment example](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_loader_gltf.html)
 

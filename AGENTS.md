@@ -32,6 +32,7 @@
 - Put activation wording, cross-domain invariants, workflow, and routing in `SKILL.md`.
 - Put domain decisions, examples, edge cases, and lifecycle rules in the owning reference.
 - Prefer correction or replacement over an additional competing convention.
+- Before removing an example, preserve its distinct use case and ownership model. Compact prerequisite setup may recur in operational examples; keep detailed guidance under one owner. Evaluate the references needed for a task, not only entry-point size.
 - Keep prose terse, direct, and complete. Use Standard Technical English.
 - Keep examples minimal but operational. State prerequisites and ownership when omitted context would make an example unsafe.
 - Make setup and teardown symmetrical. Cover animation loops, observers, listeners, controls, workers, loaders, GPU resources, and DOM nodes as applicable.

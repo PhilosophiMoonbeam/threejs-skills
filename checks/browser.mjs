@@ -3,11 +3,22 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { example } from './examples.mjs';
+import { assets } from './assets.mjs';
 
 // Serve only the pinned dependency and modules assembled from the documented examples.
 const packageRoot = new URL('../', import.meta.resolve('three'));
+const baselineCode = await example('webgl-baseline');
+const ownedCanvasCode = baselineCode
+  .replace(/const canvas = document.querySelector\('#view'\);\nif \(!canvas\) throw new Error\('Missing #view canvas'\);/, await example('owned-canvas-setup'))
+  .replace('renderer.dispose();', `renderer.dispose();\n${await example('owned-canvas-teardown')}`);
 const modules = {
-  baseline: `${await example('webgl-baseline')}\nexport { renderer, camera, scene, resize, dispose };`,
+  baseline: `${baselineCode}\nexport { renderer, camera, scene, resize, dispose };`,
+  ownedCanvas: `${ownedCanvasCode}\nexport { renderer, dispose };`,
+  pbr: `const { scene } = globalThis.fixture;\n${await example('pbr-surface')}
+    export { mesh, material, baseColor, orm, environment, disposeSurface };`,
+  pmrem: `const { scene, renderer } = globalThis.fixture;\n${await example('pmrem-environment')}
+    export { source, envTarget, disposeEnvironment };`,
+  ktx2: `${await example('standalone-ktx2')}\nexport { loadKTX2Texture };`,
   material: `${await example('tsl-material')}\nexport { createPulseMaterial };`,
   compute: `${await example('tsl-compute')}\nexport { computeSquares };`,
   post: `const { scene, camera, width, height } = globalThis.fixture;\n${await example('post-webgl')}
@@ -25,6 +36,9 @@ const server = createServer(async (req, res) => {
           "three/tsl":"/three/build/three.tsl.js",
           "three/addons/":"/three/examples/jsm/"
         }}</script><canvas id="view"></canvas>`);
+    } else if (assets.has(path)) {
+      res.setHeader('Content-Type', path.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+      res.end(assets.get(path));
     } else if (path.startsWith('/examples/')) {
       const code = modules[path.slice('/examples/'.length)];
       if (!code) throw new Error('Unknown example');
@@ -46,6 +60,13 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  const png = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, 1, 1);
+    return canvas.toDataURL().split(',')[1];
+  });
+  assets.set('/assets/base-color.png', Buffer.from(png, 'base64'));
+  assets.set('/assets/orm.png', Buffer.from(png, 'base64'));
   await page.evaluate(async () => { globalThis.baseline = await import('/examples/baseline'); });
   await page.setViewportSize({ width: 480, height: 240 });
   await page.waitForFunction(() => baseline.renderer.domElement.width === 480 && baseline.camera.aspect === 2);
@@ -65,6 +86,65 @@ try {
   assert.ok(baseline.pixels[2] > baseline.pixels[0], 'baseline renders its blue mesh');
   assert.ok(baseline.stopped && baseline.canvasRetained, 'teardown stops the loop and retains the host-owned canvas');
   console.log('PASS: documented WebGL baseline renders, resizes, and tears down.');
+
+  const canvasesLeft = await page.evaluate(async () => {
+    const host = document.createElement('div'); host.id = 'app';
+    Object.assign(host.style, { width: '160px', height: '90px' }); document.body.append(host);
+    for (let mount = 0; mount < 2; mount++) {
+      const app = await import(`/examples/ownedCanvas?mount=${mount}`);
+      app.dispose();
+    }
+    const count = host.querySelectorAll('canvas').length; host.remove(); return count;
+  });
+  assert.equal(canvasesLeft, 0, 'application-owned canvases are removed on each unmount');
+  console.log('PASS: application-created canvas adaptation removes owned DOM nodes across remounts.');
+
+  const assetsResult = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer(); renderer.setSize(64, 64);
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100); camera.position.z = 3;
+    globalThis.fixture = { scene, renderer };
+    const disposed = [];
+    const dispose = THREE.Texture.prototype.dispose;
+    THREE.Texture.prototype.dispose = function () { disposed.push(this); return dispose.call(this); };
+    try {
+      const surface = await import('/examples/pbr');
+      renderer.render(scene, camera);
+      const pixel = new Uint8Array(4);
+      renderer.getContext().readPixels(32, 32, 1, 1, renderer.getContext().RGBA, renderer.getContext().UNSIGNED_BYTE, pixel);
+      const roles = surface.baseColor.colorSpace === THREE.SRGBColorSpace && surface.orm.colorSpace === THREE.NoColorSpace;
+      const sharedORM = surface.material.aoMap === surface.orm && surface.material.roughnessMap === surface.orm && surface.material.metalnessMap === surface.orm;
+      surface.disposeSurface();
+      const surfaceReleased = scene.children.length === 0 && scene.environment === null &&
+        [surface.baseColor, surface.orm, surface.environment].every(texture => disposed.filter(value => value === texture).length === 1);
+
+      const env = await import('/examples/pmrem');
+      const sourceReleased = disposed.includes(env.source);
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(), new THREE.MeshStandardMaterial()); scene.add(mesh);
+      renderer.render(scene, camera); // The target still works after source/generator disposal.
+      const environmentPixel = new Uint8Array(4);
+      renderer.getContext().readPixels(32, 32, 1, 1, renderer.getContext().RGBA, renderer.getContext().UNSIGNED_BYTE, environmentPixel);
+      let targetDisposals = 0; env.envTarget.addEventListener('dispose', () => targetDisposals++);
+      env.disposeEnvironment();
+      const environmentReleased = scene.environment === null && targetDisposals === 1;
+      scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+
+      const { loadKTX2Texture } = await import('/examples/ktx2');
+      const texture = await loadKTX2Texture(renderer, '/assets/material.ktx2');
+      const ktx = { width: texture.image.width, height: texture.image.height, colorSpace: texture.colorSpace, pixel: [...texture.image.data] };
+      texture.dispose();
+      return { pixel: [...pixel], environmentPixel: [...environmentPixel], roles, sharedORM, surfaceReleased, sourceReleased, environmentReleased, ktx };
+    } finally {
+      THREE.Texture.prototype.dispose = dispose;
+      renderer.dispose();
+    }
+  });
+  assert.ok(assetsResult.pixel[0] > 0, 'PBR surface renders with the loaded HDR environment');
+  assert.ok(assetsResult.environmentPixel[0] > 0, 'PMREM target lights the surface after source and generator disposal');
+  for (const key of ['roles', 'sharedORM', 'surfaceReleased', 'sourceReleased', 'environmentReleased']) assert.ok(assetsResult[key], key);
+  assert.deepEqual(assetsResult.ktx, { width: 1, height: 1, colorSpace: 'srgb', pixel: [255, 255, 255, 255] });
+  console.log('PASS: self-contained PBR setup, explicit PMREM lifecycle, and standalone raw KTX2 loading.');
 
   const post = await page.evaluate(async () => {
     const THREE = await import('three');

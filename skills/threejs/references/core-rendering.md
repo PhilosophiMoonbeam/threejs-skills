@@ -128,6 +128,28 @@ function dispose() {
 For continuous rendering, use `renderer.setAnimationLoop()`; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` is deprecated in Three.js 0.185.1. [Timer](https://threejs.org/docs/pages/Timer.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
 This uses the `setPixelRatio()` strategy: `setSize()` receives CSS-pixel dimensions and applies the renderer's pixel ratio once. Do not pass `width * dpr` and also leave a non-`1` pixel ratio configured. If physical dimensions are managed manually instead, set the renderer pixel ratio to `1` and pass the multiplied drawing-buffer dimensions. [Responsive rendering manual](https://threejs.org/manual/en/responsive.html)
 
+### Application-created canvas
+
+When the application owns the canvas, replace the baseline's canvas lookup and missing-canvas check with the following setup. The host document must provide `#app` with explicit nonzero dimensions; CSS controls display size, so retain the baseline's `setSize(width, height, false)` and resize observer.
+
+<!-- check: owned-canvas-setup -->
+```js
+const host = document.querySelector('#app');
+if (!host) throw new Error('Missing #app host');
+const canvas = document.createElement('canvas');
+Object.assign(canvas.style, { display: 'block', width: '100%', height: '100%' });
+host.append(canvas);
+```
+
+Keep the remaining baseline setup. At the end of its `dispose()`, after stopping producers, freeing scene resources, and calling `renderer.dispose()`, remove the application-owned node:
+
+<!-- check: owned-canvas-teardown -->
+```js
+canvas.remove();
+```
+
+Leave a host-owned canvas in place. Renderer disposal releases renderer resources; DOM removal is a separate ownership action. [r185 WebGLRenderer disposal](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js)
+
 ## Continuous versus on-demand rendering
 
 Choose one owner for frame scheduling. Use `setAnimationLoop()` for animation or WebXR; for a static scene, render once and invalidate only when state changes. A one-shot `requestAnimationFrame()` is appropriate for coalescing invalidations, but do not install it alongside an animation loop:
