@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "check": "node --test checks/*.test.mjs",
-    "check:browser": "node checks/browser.mjs"
+    "check:browser": "node checks/browser.mjs",
+    "render:artwork": "node checks/render-artwork.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1",

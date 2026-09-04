@@ -52,7 +52,7 @@ Target exactly `three@0.185.1` / revision 185 throughout. Use these public packa
 - [Revision 185 source tag](https://github.com/mrdoob/three.js/tree/r185) and [revision 185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json)
 - [Three.js migration guide](https://github.com/mrdoob/three.js/wiki/Migration-Guide)
 
-The package follows the [Agent Skills specification](https://agentskills.io/specification). The repository identity artwork is available as the [SVG source](assets/threejs-skills-for-agents.svg).
+The package follows the [Agent Skills specification](https://agentskills.io/specification). The repository identity artwork is available as the [SVG source](assets/threejs-skills-for-agents.svg). Its outlined lettering needs no installed fonts. After installing the maintainer dependencies and Chromium below, run `npm run render:artwork` to regenerate the README PNG from the SVG.
 
 ## Validation
 
