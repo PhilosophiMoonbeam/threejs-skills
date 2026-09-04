@@ -15,16 +15,15 @@ metadata:
 - Do not introduce an API first added after revision 185. Route code written for another revision through the migration reference before adapting it.
 - Use Three.js core and official addons as Three.js APIs. Label every external engine, wrapper, control, loader, or effect as third-party.
 
-## Required workflow
+## Task workflow
 
-1. Inspect the package lock, import map, or CDN URLs. Establish one exact `three@0.185.1` dependency and one module-loading strategy.
-2. Choose WebGL or WebGPU before selecting materials, custom shaders, post-processing, or render targets.
-3. State the scene units, world axes, camera convention, object ownership, and required browser/GPU capabilities. If actual WebGPU is required, check its availability rather than treating a WebGL 2 fallback as equivalent.
-4. Inventory asset formats, compression, UV sets, color data, environment lighting, and asynchronous dependencies.
-5. Define resize, animation, input, loading cancellation, teardown, and route/component remount behavior. For static scenes, prefer rendering on demand. [Rendering on demand](https://threejs.org/manual/en/rendering-on-demand.html)
-6. Read only the references selected by the routing table below. Each topic has one owner; do not invent a second convention.
-7. Start from the minimal renderer baseline, then add one domain at a time.
-8. Exercise the actual surface. Check the console, frame output, resize behavior, interaction, and teardown before optimizing.
+1. Inspect the package lock, import map, or CDN URLs and the existing renderer. For an unknown or different revision, read the migration reference before adapting code; identify the mismatch without silently upgrading a dependency.
+2. Match the work to the request:
+   - **New application:** choose WebGL or WebGPU, one module-loading strategy, scene units, asset inputs, and lifecycle ownership. Start from the core-rendering baseline.
+   - **Existing application:** preserve its renderer, architecture, and lifecycle; change only the relevant subsystem. Inspect shared consumers before changing ownership or state.
+   - **Migration:** establish source and target revisions, apply intervening deltas, and compare affected behavior and visuals.
+3. Read the smallest set of references selected below. Return to this index when another domain is needed.
+4. Exercise the affected surface: frame output and console, plus resize, interaction, async failure/cancellation, or teardown where the change touches them. Measure before optimizing.
 
 ## Canonical imports and renderer choice
 
@@ -37,36 +36,6 @@ import * as THREE from 'three';
 // Official addon; keep the .js suffix
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 ```
-
-For browser-only CDN loading, choose one import map and pin every Three.js URL to `0.185.1`:
-
-```html
-<!-- WebGL -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
-  }
-}
-</script>
-```
-
-```html
-<!-- WebGPU/TSL: map bare `three` to the WebGPU build because addons import it -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
-    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
-    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
-  }
-}
-</script>
-```
-
-With npm or a bundler, install `three@0.185.1`; its package exports provide the same boundaries without an import map.
 
 For a WebGPU/TSL application, use the dedicated `three@0.185.1` exports:
 
@@ -89,78 +58,18 @@ Choose once per rendering pipeline:
 - Do not deep-import `three/src/...` or `three/examples/jsm/...`. Use `three`, `three/webgpu`, `three/tsl`, and `three/addons/...` only.
 - Do not mix CDN origins or versions. Map every selected core, WebGPU/TSL, and addon entry to the same `0.185.1` distribution.
 
-## Minimal WebGL application baseline
-
-The host document must provide an element matching `#app`. This baseline owns everything it creates and exposes deterministic teardown.
-
-```js
-import * as THREE from 'three';
-
-const host = document.querySelector('#app');
-if (!host) throw new Error('Missing #app host');
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x181818);
-
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-camera.position.z = 3;
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-host.append(renderer.domElement);
-
-const geometry = new THREE.BoxGeometry();
-const material = new THREE.MeshNormalMaterial();
-const mesh = new THREE.Mesh(geometry, material);
-scene.add(mesh);
-
-const timer = new THREE.Timer();
-timer.connect(document);
-
-function resize() {
-  const width = Math.max(1, host.clientWidth);
-  const height = Math.max(1, host.clientHeight);
-  renderer.setSize(width, height);
-  camera.aspect = width / height;
-  camera.updateProjectionMatrix();
-}
-
-const resizeObserver = new ResizeObserver(resize);
-resizeObserver.observe(host);
-resize();
-
-renderer.setAnimationLoop((timestamp) => {
-  timer.update(timestamp);
-  mesh.rotation.y += timer.getDelta() * 0.75;
-  renderer.render(scene, camera);
-});
-
-export function disposeApp() {
-  renderer.setAnimationLoop(null);
-  resizeObserver.disconnect();
-  timer.dispose();
-  scene.remove(mesh);
-  geometry.dispose();
-  material.dispose();
-  renderer.dispose();
-  renderer.domElement.remove();
-}
-```
-
-Call `disposeApp()` before removing or replacing the host. `Timer.update()` must run once before reading the frame delta, and `Timer.dispose()` disconnects its document listener; see the [revision 185 `Timer` source](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js).
-
 ## Reference index
 
 Read the smallest set that owns the requested work. Return here to route an additional topic; references are not a chain.
 
 | Task signal | Read |
 |---|---|
-| scene, camera, renderer, scene graph, transforms, responsive sizing, render loop, rendering on demand, disposal, WebGPU availability or backend capabilities | [core rendering](references/core-rendering.md) |
+| new application, npm/CDN setup, import maps, scene, camera, renderer, scene graph, transforms, responsive sizing, render loop, rendering on demand, disposal, WebGPU availability or backend capabilities | [core rendering](references/core-rendering.md) |
 | primitives, `BufferGeometry`, attributes, morph data, lines, points, instancing | [geometry](references/geometry.md) |
 | built-in or PBR materials, transparency, blending, environment response | [materials](references/materials.md) |
 | lights, physically based intensity, shadows, IBL, `RectAreaLight`, `RectAreaLightUniformsLib`, `RectAreaLightTexturesLib`, or LTC initialization, helpers | [lighting and shadows](references/lighting-and-shadows.md) |
 | color or data textures, UV channels, HDR, PMREM, render or depth targets | [textures and render targets](references/textures-and-render-targets.md) |
-| loading manager, `loadAsync`, GLTF/GLB, Draco, KTX2, other formats, and cleanup | [asset loading](references/asset-loading.md) |
+| loading manager, `loadAsync`, cancellation, late results, GLTF/GLB, Draco, KTX2, other formats, and cleanup | [asset loading](references/asset-loading.md) |
 | clips, tracks, mixers, actions, skeletal animation, morph animation | [animation](references/animation.md) |
 | raycasting, pointer coordinates, selection, controls, event cleanup | [interaction and controls](references/interaction-and-controls.md) |
 | `ShaderMaterial`, `RawShaderMaterial`, GLSL, TSL/nodes, `NodeMaterial`, compute, extension boundaries | [shaders and TSL](references/shaders-and-tsl.md) |
@@ -197,7 +106,7 @@ Stop at the first failing layer; do not tune later layers to hide it.
 
 ## Migration rule
 
-Whenever code, generated advice, an example, or a dependency targets an unknown revision or anything other than 0.185.1, read [the 0.185.1 migration reference](references/0.185.1-migration.md) before implementation. Identify the source revision, apply each intervening migration delta, replace removed APIs rather than aliasing them, and re-check the result against the [official migration guide](https://github.com/mrdoob/three.js/wiki/Migration-Guide) and [revision 185 source](https://github.com/mrdoob/three.js/tree/r185).
+Whenever code, generated advice, an example, or a dependency targets an unknown revision or anything other than 0.185.1, read the 0.185.1 migration reference in the index before implementation. Identify the source revision, apply each intervening migration delta, replace removed APIs rather than aliasing them, and re-check the result against the [official migration guide](https://github.com/mrdoob/three.js/wiki/Migration-Guide) and [revision 185 source](https://github.com/mrdoob/three.js/tree/r185).
 
 ## Official sources
 

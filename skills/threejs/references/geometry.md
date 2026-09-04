@@ -20,10 +20,11 @@ All APIs and behavior below target Three.js 0.185.1 exactly.
   must cover every index or vertex exactly once. `start` and `count` address indices
   on indexed geometry and vertices otherwise.
 - Bounds are not automatically refreshed after vertex or instance mutation.
-- Index values in a `Uint16Array` are limited to `0..65535` (65,536 addressable
-  vertices); an index of `65536` or greater requires `Uint32Array` indices. `setIndex`
-  auto-selects `Uint16Array` or `Uint32Array` when passed a regular JavaScript array.
-  [revision 185 BufferGeometry source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L311-L325)
+- Use `Uint32Array` when a vertex index reaches `65535`; WebGL 2 reserves the
+  maximum 16-bit value for primitive restart. `setIndex()` selects the correct
+  width for a regular JavaScript array. A manually supplied typed attribute must
+  already use the correct width. [r185 index selection](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L311-L325),
+  [r185 primitive-restart threshold](https://github.com/mrdoob/three.js/blob/r185/src/utils.js#L61-L71)
 
 ## Built-in generators
 Common full positional signatures, where positional detail is useful:

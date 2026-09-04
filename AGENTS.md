@@ -55,8 +55,12 @@ Run from the repository root after documentation changes:
 
 ```bash
 uvx --from skills-ref agentskills validate ./skills/threejs
+npm ci
+npm run check
 git diff --check
 ```
+
+For renderer, shader, TSL, post-processing, or sizing examples, also run `npx playwright install chromium` and `npm run check:browser`. Set `REQUIRE_WEBGPU=1` when native WebGPU coverage is required. Keep maintainer checks and behavior evaluations under `checks/`, outside the installed skill. Mark executable Markdown examples with stable `<!-- check: name -->` identifiers so checks exercise the documented code directly.
 
 Also verify the affected surface:
 

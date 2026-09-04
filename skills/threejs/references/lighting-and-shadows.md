@@ -152,25 +152,16 @@ Core also provides `PointLightHelper`, `SpotLightHelper`, and `HemisphereLightHe
 
 ## IBL policy
 
-Load HDR equirectangular maps with `HDRLoader`, not the renamed `RGBELoader` compatibility shim. Load once, set reflection mapping, and assign the same texture as needed:
+Use an environment prepared by the textures topic. It owns HDR/EXR loading, mapping, preprocessing, and texture/PMREM lifetime. With that texture already assigned:
 
 ```js
-import * as THREE from 'three';
-import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
-
-const environment = await new HDRLoader().loadAsync('/studio.hdr');
-environment.mapping = THREE.EquirectangularReflectionMapping;
-scene.environment = environment;
-scene.background = environment;
 scene.environmentIntensity = 1;
 scene.backgroundIntensity = 0.6;
 scene.environmentRotation.y = Math.PI / 4;
 scene.backgroundRotation.y = Math.PI / 4;
 ```
 
-`environmentIntensity`/`environmentRotation` affect scene IBL; background controls affect only the background. A material's explicit `envMap` is independent and prevents inheritance from `scene.environment`. Rotation convention changed in r184, so retune pre-r184 values. [Scene revision 185](https://github.com/mrdoob/three.js/blob/r185/src/scenes/Scene.js) · [183→184 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184)
-
-`WebGLRenderer` converts supported equirectangular/cube maps to internal cube or PMREM targets and caches those targets. PMREM is required for the Standard/Physical PBR path; explicit Lambert/Phong `envMap` values are not automatically PMREM-filtered. If explicit `PMREMGenerator` ownership is necessary, retain its returned render target; dispose the input HDR texture, output target, and generator separately when each is no longer referenced. [WebGLEnvironments revision 185](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLEnvironments.js) · [PMREMGenerator revision 185](https://github.com/mrdoob/three.js/blob/r185/src/extras/PMREMGenerator.js) · [179→180 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#179--180)
+`environmentIntensity`/`environmentRotation` affect inherited scene IBL; background controls affect only the background. An explicit material `envMap` prevents scene-environment inheritance; material-specific response belongs to the materials topic. Rotation convention changed in r184, so retune pre-r184 values. [r185 Scene](https://github.com/mrdoob/three.js/blob/r185/src/scenes/Scene.js), [183→184 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184)
 
 ## Diffuse light probes
 

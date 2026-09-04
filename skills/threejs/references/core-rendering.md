@@ -28,7 +28,41 @@ await renderer.init(); // Required here because this is an on-demand renderer.
 renderer.render(scene, camera);
 ```
 
+## Browser import maps
+
+For browser-only CDN loading, choose one import map and pin every Three.js URL to `0.185.1`:
+
+```html
+<!-- WebGL -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+```
+
+```html
+<!-- WebGPU/TSL: map bare `three` to the WebGPU build because addons import it -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+```
+
+With npm or a bundler, install `three@0.185.1`; its package exports provide the same boundaries without an import map. [r185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json)
+
 ## Minimal WebGL lifecycle
+
+The host owns the canvas and its CSS size; this setup owns its renderer and scene resources. Call `dispose()` before replacing the canvas or mounting another renderer on it.
 
 ```html
 <canvas id="view"></canvas>
@@ -38,10 +72,12 @@ renderer.render(scene, camera);
 </style>
 ```
 
+<!-- check: webgl-baseline -->
 ```js
 import * as THREE from 'three';
 
 const canvas = document.querySelector('#view');
+if (!canvas) throw new Error('Missing #view canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -61,9 +97,9 @@ function resize() {
   const dpr = renderer.getPixelRatio();
   if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
     renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
   }
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
 }
 const resizeObserver = new ResizeObserver(resize);
 resizeObserver.observe(canvas);
@@ -89,15 +125,17 @@ function dispose() {
 }
 ```
 
-Use `renderer.setAnimationLoop()`, not a manual `requestAnimationFrame()` loop; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` is deprecated in Three.js 0.185.1. [Timer](https://threejs.org/docs/pages/Timer.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
+For continuous rendering, use `renderer.setAnimationLoop()`; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` is deprecated in Three.js 0.185.1. [Timer](https://threejs.org/docs/pages/Timer.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
 This uses the `setPixelRatio()` strategy: `setSize()` receives CSS-pixel dimensions and applies the renderer's pixel ratio once. Do not pass `width * dpr` and also leave a non-`1` pixel ratio configured. If physical dimensions are managed manually instead, set the renderer pixel ratio to `1` and pass the multiplied drawing-buffer dimensions. [Responsive rendering manual](https://threejs.org/manual/en/responsive.html)
 
 ## Continuous versus on-demand rendering
 
 Choose one owner for frame scheduling. Use `setAnimationLoop()` for animation or WebXR; for a static scene, render once and invalidate only when state changes. A one-shot `requestAnimationFrame()` is appropriate for coalescing invalidations, but do not install it alongside an animation loop:
 
+<!-- check: on-demand -->
 ```js
 let frameId = null;
+let disposed = false;
 function renderOnDemand() {
   frameId = null;
   if (controls.enableDamping) controls.update();
@@ -105,7 +143,7 @@ function renderOnDemand() {
   renderer.render(scene, camera);
 }
 function invalidate() {
-  if (frameId === null) frameId = requestAnimationFrame(renderOnDemand);
+  if (!disposed && frameId === null) frameId = requestAnimationFrame(renderOnDemand);
 }
 
 controls.addEventListener('change', invalidate);
@@ -114,9 +152,18 @@ const resizeObserver = new ResizeObserver(invalidate);
 resizeObserver.observe(renderer.domElement);
 // Call invalidate() after an async model/texture/data update as well.
 invalidate();
+
+function disposeScheduling() {
+  disposed = true;
+  if (frameId !== null) cancelAnimationFrame(frameId);
+  frameId = null;
+  resizeObserver.disconnect();
+  controls.removeEventListener('change', invalidate);
+  window.removeEventListener('resize', invalidate);
+}
 ```
 
-Set `frameId` back to `null` before rendering so damping-triggered `change` events schedule at most one next frame. Invalidate after controls, resize, and asset/data changes; cancel a pending `frameId` and remove those listeners during disposal. This avoids a continuously running loop and avoids duplicate queued frames. [Rendering on demand manual](https://threejs.org/manual/en/rendering-on-demand.html)
+Set `frameId` back to `null` before rendering so damping-triggered `change` events schedule at most one next frame. Invalidate after controls, resize, and asset/data changes; call `disposeScheduling()` before disposing controls or the renderer. This avoids a continuously running loop and avoids duplicate queued frames. [Rendering on demand manual](https://threejs.org/manual/en/rendering-on-demand.html)
 
 ## Cameras
 

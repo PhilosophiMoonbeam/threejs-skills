@@ -16,88 +16,86 @@ Use this reference for pointer coordinates, raycasting, selection, and the 0.185
 
 ## Canonical pointer and picking pattern
 
+<!-- check: picking -->
 ```js
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const canvas = renderer.domElement;
+const previousCursor = canvas.style.cursor;
 const pointer = new THREE.Vector2();
+const pointerClient = { clientX: 0, clientY: 0 };
 const raycaster = new THREE.Raycaster();
 const hits = [];
 const selectable = [modelRoot];
+let pointerInside = false;
 let pointerDirty = false;
 let selected = null;
 let hovered = null;
 
-function setSelection(object) {
-  selected = object;
-}
-
 function updateHover(hit) {
   hovered = hit?.object ?? null;
-  canvas.style.cursor = hovered ? "pointer" : "";
+  canvas.style.cursor = hovered ? 'pointer' : previousCursor;
 }
 
-function pointerToNDC(event, target = pointer) {
-  const rect = canvas.getBoundingClientRect();
-  target.set(
-    ((event.clientX - rect.left) / rect.width) * 2 - 1,
-    -((event.clientY - rect.top) / rect.height) * 2 + 1,
-  );
-  return target;
-}
-
-function onPointerMove(event) {
-  pointerToNDC(event);
+function invalidatePicking() {
   pointerDirty = true;
 }
 
-function releasePointer(event) {
-  if (canvas.hasPointerCapture?.(event.pointerId)) {
-    canvas.releasePointerCapture(event.pointerId);
+function pointerToNDC(event) {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  pointer.set(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  return pointer;
+}
+
+function pickNearest(event) {
+  if (event) {
+    pointerClient.clientX = event.clientX;
+    pointerClient.clientY = event.clientY;
   }
-}
-
-function onPointerLeave() {
-  pointerDirty = false;
-  updateHover(null);
-}
-
-function onPointerUp(event) {
-  releasePointer(event);
-}
-
-function onPointerCancel(event) {
-  releasePointer(event);
-  pointerDirty = false;
-  updateHover(null);
-}
-
-function pickNearest() {
+  if (!pointerToNDC(pointerClient)) return null;
+  camera.updateWorldMatrix(true, false);
+  for (const root of selectable) root.updateWorldMatrix(true, true);
   raycaster.setFromCamera(pointer, camera);
   hits.length = 0; // A supplied result array is appended to, not cleared.
   raycaster.intersectObjects(selectable, true, hits);
   return hits[0] ?? null;
 }
 
+function onPointerMove(event) {
+  pointerClient.clientX = event.clientX;
+  pointerClient.clientY = event.clientY;
+  pointerInside = true;
+  invalidatePicking();
+}
+
+function onPointerLeave() {
+  pointerInside = false;
+  pointerDirty = false;
+  updateHover(null);
+}
+
 function onPointerDown(event) {
-  pointerToNDC(event);
-  const hit = pickNearest();
-  const owner = hit?.object.userData.selectionOwner ?? hit?.object ?? null;
-  setSelection(owner);
+  const hit = pickNearest(event);
+  selected = hit?.object.userData.selectionOwner ?? hit?.object ?? null;
 }
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
-canvas.addEventListener("pointermove", onPointerMove);
-canvas.addEventListener("pointerleave", onPointerLeave);
-canvas.addEventListener("pointercancel", onPointerCancel);
-canvas.addEventListener("pointerdown", onPointerDown);
-canvas.addEventListener("pointerup", onPointerUp);
+controls.addEventListener('change', invalidatePicking);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerleave', onPointerLeave);
+canvas.addEventListener('pointercancel', onPointerLeave);
+canvas.addEventListener('pointerdown', onPointerDown);
 
+// Called by the application's single frame loop after updating object transforms.
 function render() {
   controls.update();
-  if (pointerDirty) {
+  if (pointerInside && pointerDirty) {
     pointerDirty = false;
     updateHover(pickNearest());
   }
@@ -105,14 +103,17 @@ function render() {
 }
 
 function disposeInteraction() {
-  canvas.removeEventListener("pointermove", onPointerMove);
-  canvas.removeEventListener("pointerleave", onPointerLeave);
-  canvas.removeEventListener("pointercancel", onPointerCancel);
-  canvas.removeEventListener("pointerdown", onPointerDown);
-  canvas.removeEventListener("pointerup", onPointerUp);
+  controls.removeEventListener('change', invalidatePicking);
+  canvas.removeEventListener('pointermove', onPointerMove);
+  canvas.removeEventListener('pointerleave', onPointerLeave);
+  canvas.removeEventListener('pointercancel', onPointerLeave);
+  canvas.removeEventListener('pointerdown', onPointerDown);
   controls.dispose();
+  canvas.style.cursor = previousCursor;
 }
 ```
+
+Refresh matrices before a pick, including before the first render. Call `invalidatePicking()` after model animation, camera changes outside controls, and resize; a stationary pointer can gain or lose a hit. The targeted world updates honor the core matrix-invalidation contract. [r185 Raycaster](https://github.com/mrdoob/three.js/blob/r185/src/core/Raycaster.js), [r185 Object3D](https://github.com/mrdoob/three.js/blob/r185/src/core/Object3D.js)
 
 Use pointer events for mouse, pen, and touch. Set `canvas.style.touchAction = "none"` when application gestures must suppress browser panning. For a drag, call `setPointerCapture(event.pointerId)` on pointer down, release it on pointer up, and clear drag/key state on `pointercancel`, `blur`, or control unlock.
 
@@ -162,7 +163,10 @@ Reuse the raycaster and destination, and handle a miss:
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const worldPoint = new THREE.Vector3();
 function pointerOnPlane(event) {
-  raycaster.setFromCamera(pointerToNDC(event), camera);
+  const ndc = pointerToNDC(event);
+  if (!ndc) return null;
+  camera.updateWorldMatrix(true, false);
+  raycaster.setFromCamera(ndc, camera);
   return raycaster.ray.intersectPlane(plane, worldPoint); // Vector3 | null
 }
 ```
@@ -179,35 +183,7 @@ Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Config
 
 ### On-demand rendering
 
-Static scenes need not render continuously. Render once, then request a frame from
-the controls' stable `change` listener (and from resize or other scene changes).
-When damping is enabled, do not call `render` directly from that event: schedule
-one coalesced frame, call `controls.update()` inside it, and let subsequent
-`change` events schedule frames until the damping settles. Auto-rotation is
-time-dependent and therefore remains a continuous update. This is the official
-[on-demand rendering pattern](https://threejs.org/manual/en/rendering-on-demand.html).
-
-```js
-let renderRequestId = null;
-function render() {
-  renderRequestId = null;
-  controls.update();
-  renderer.render(scene, camera);
-}
-function requestRender() {
-  if (renderRequestId !== null) return;
-  renderRequestId = requestAnimationFrame(render);
-}
-controls.addEventListener("change", requestRender);
-window.addEventListener("resize", requestRender);
-requestRender();
-function disposeOnDemand() {
-  controls.removeEventListener("change", requestRender);
-  window.removeEventListener("resize", requestRender);
-  if (renderRequestId !== null) cancelAnimationFrame(renderRequestId);
-  renderRequestId = null;
-}
-```
+Use the coalesced scheduler owned by core rendering, routed through the skill index. Connect the controls' `change` event to its invalidation callback. With damping, call `controls.update()` inside the scheduled frame so changes schedule subsequent frames until settling; never render synchronously from `change`. Auto-rotation requires continuous updates. Invalidate both picking and rendering when scene state changes. [Official on-demand pattern](https://threejs.org/manual/en/rendering-on-demand.html)
 
 ### FlyControls and FirstPersonControls
 

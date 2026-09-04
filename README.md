@@ -62,6 +62,20 @@ From the repository root, validate the package with the published reference vali
 uvx --from skills-ref agentskills validate ./skills/threejs
 ```
 
+Maintainer checks live in `checks/`, outside the installed skill. With Node.js 22 or later:
+
+```bash
+npm ci
+npm run check
+npx playwright install chromium
+npm run check:browser
+git diff --check
+```
+
+The checks validate local links, routing, JavaScript syntax, and imports against the exact locked package; they also execute the documented cancellation, picking, and scheduling examples. Browser checks exercise renderer teardown, responsive sizing, composer DPR, TSL material output, and compute readback on WebGL 2 fallback and WebGPU. WebGPU unavailability is reported as a skip; set `REQUIRE_WEBGPU=1` to require that backend. Headless software rendering checks correctness, not target-device performance.
+
+Use the [behavior evaluation cases](checks/scenarios.md) to compare agent task scope, outcomes, and context use across skill revisions. Skill installation requires only `skills/threejs/`; maintainer dependencies and evaluation fixtures stay in this repository.
+
 ## Contributing
 
 - Keep `skills/threejs/` as the only package and `SKILL.md` as its activation file.

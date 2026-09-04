@@ -3,7 +3,7 @@
 ## Scope
 
 Use this reference for texture loading and annotation, UV selection, sampling, environment maps, render/depth targets,
-texture ownership, and GPU-memory decisions in 0.185.1. Materials own map semantics; post-processing owns multi-pass composition; shaders own custom sampling.
+texture ownership, and GPU-memory decisions in 0.185.1. Materials own slot-to-channel and color-role tables; post-processing owns multi-pass composition; shaders own custom sampling.
 
 ## Decisions and invariants
 
@@ -48,22 +48,6 @@ See [`TextureLoader`](https://threejs.org/docs/pages/TextureLoader.html).
 Await a texture before constructing its material when practical. Adding or removing a map on an already-rendered material changes shader features, so set `material.needsUpdate = true`.
 Replacing one non-null map with another normally does not require recompilation.
 
-## Map roles and channels
-
-| Material input | Interpretation | Sampled source channel |
-|---|---|---|
-| `map`, `emissiveMap`, `sheenColorMap`, `specularColorMap`, and `specularMap` | sRGB color | RGB |
-| `normalMap` | non-color tangent/object-space vectors | RGB |
-| `aoMap` | non-color occlusion | R |
-| `roughnessMap` | non-color roughness | G |
-| `metalnessMap` | non-color metalness | B |
-| `alphaMap` | non-color opacity | G for RGB/RGBA textures |
-| `bumpMap`, `displacementMap` | non-color height | documented scalar channel |
-| `lightMap` | linear lighting data (`LinearSRGBColorSpace`) | RGB |
-
-Grayscale roughness or metalness files work because their RGB channels are equal, not because Three.js samples a generic grayscale value.
-`transparent = true` enables alpha blending; prefer `alphaTest` for hard cutouts. See [`MeshStandardMaterial`](https://threejs.org/docs/pages/MeshStandardMaterial.html).
-
 ## UV sets and texture transforms
 
 Geometry attribute names are `uv`, `uv1`, `uv2`, and `uv3`. `Texture.channel` selects them as `0`, `1`, `2`, and `3` respectively; AO has no hard-wired `uv2` path.
@@ -78,6 +62,8 @@ const uv = geometry.getAttribute('uv');
 uv.setXY(vertexIndex, u, v);
 uv.needsUpdate = true;
 ```
+
+A texture has one UV selector and transform. If material slots need different UV sets or transforms, clone the texture and configure each clone; clones share image data. Keep every clone and the shared image under explicit lifetime ownership. [r185 Texture.copy](https://github.com/mrdoob/three.js/blob/r185/src/textures/Texture.js)
 
 Changing `texture.channel` after a material has rendered changes the shader's required UV
 attribute; set `material.needsUpdate = true` after such a change. r185 WebGL shader parameters
@@ -131,23 +117,7 @@ linear, and Display-P3 metadata is preserved, while unspecified/unsupported meta
 `NoColorSpace`. Keep that result unless the asset metadata is known to be wrong. Reuse one
 configured loader and release its workers afterward.
 
-```js
-import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
-
-if (renderer.isWebGPURenderer) await renderer.init();
-// r185 resolves Basis JS/WASM relative to the addon; normally no transcoder path is needed.
-const ktx2 = new KTX2Loader().detectSupport(renderer);
-const texture = await ktx2.loadAsync('/assets/material.ktx2');
-ktx2.dispose();
-```
-
-If a bundler or static host does not emit `examples/jsm/libs/basis`, copy
-`basis_transcoder.js` and `basis_transcoder.wasm` from the exact `three@0.185.1` package and
-call `.setTranscoderPath()` with that directory. Do not point at decoder files from another
-Three.js release. See [`KTX2Loader`](https://threejs.org/docs/pages/KTX2Loader.html),
-[revision 185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js),
-and [revision 185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json).
-`detectSupportAsync()` is deprecated in 0.185.1: [Migration r180→r181](https://github.com/mrdoob/three.js/wiki/Migration-Guide#180--181).
+Decoder setup, capability detection, packaged transcoder paths, and worker lifetime belong to asset loading; return to the skill index for that topic. [r185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
 
 ## HDR, EXR, environments, and PMREM
 
@@ -170,9 +140,9 @@ scene.background = environment;
 For manual WebGL PMREM, `pmrem.fromEquirectangular(source)` returns a render target. Retain it as owner, use `.texture`, then dispose target and generator.
 Do not lose the target handle. See [`PMREMGenerator`](https://threejs.org/docs/pages/PMREMGenerator.html).
 
-Background uses `scene.backgroundIntensity`/`backgroundRotation`; inherited environments use `scene.environmentIntensity`/`environmentRotation`.
-An explicit `material.envMap` overrides the scene environment and uses `envMapIntensity`/`envMapRotation`. r184 aligned environment rotation signs with object rotations.
-Remove older sign compensation. [Migration r183→r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184)
+With `WebGPURenderer`, assign the HDR/EXR source directly and retain it until every environment/background consumer is retired; let the renderer preprocess it. Do not pass a WebGL PMREM target into that path. [r185 WebGPU environment example](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_loader_gltf.html)
+
+Clear `scene.environment` and `scene.background` before disposing their final owned texture. If an explicit PMREM target is used, dispose it after its last consumer; dispose the generator after preprocessing. Materials own environment response; lighting owns scene/background intensity and orientation.
 
 ## Render and depth targets
 

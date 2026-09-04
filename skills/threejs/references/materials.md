@@ -58,44 +58,36 @@ more than a fixed material-name ranking.
 
 ## Canonical PBR pattern
 
+Assume an existing lit scene and successfully loaded, owned `baseColor` and `orm` textures: sRGB base color and non-color packed R=AO/G=roughness/B=metalness data. The textures topic owns acquisition and annotation; all slots here use the same UV set.
+
 ```javascript
 import * as THREE from 'three';
-import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
-
-const loader = new THREE.TextureLoader();
-const baseColor = await loader.loadAsync('base-color.webp');
-baseColor.colorSpace = THREE.SRGBColorSpace;
-const orm = await loader.loadAsync('orm.webp'); // R=AO, G=roughness, B=metalness
 
 const geometry = new THREE.SphereGeometry(1, 64, 32);
-geometry.setAttribute('uv1', geometry.getAttribute('uv').clone());
-
-const aoMap = orm.clone();
-aoMap.channel = 1; // AO conventionally uses the second UV set
-const roughnessMap = orm.clone();
-roughnessMap.channel = 0;
-const metalnessMap = orm.clone();
-metalnessMap.channel = 0;
 
 const material = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   map: baseColor,
-  aoMap,
+  aoMap: orm,
   roughness: 1,
-  roughnessMap,
+  roughnessMap: orm,
   metalness: 1,
-  metalnessMap,
+  metalnessMap: orm,
 });
 
-const environment = await new HDRLoader().loadAsync('studio.hdr');
-environment.mapping = THREE.EquirectangularReflectionMapping;
-scene.environment = environment;
-scene.add(new THREE.Mesh(geometry, material));
+const mesh = new THREE.Mesh(geometry, material);
+scene.add(mesh);
+
+function disposeSurface() {
+  scene.remove(mesh);
+  geometry.dispose();
+  material.dispose();
+  baseColor.dispose();
+  orm.dispose(); // Shared by three slots, owned once.
+}
 ```
 
-A texture has one `channel` selector. If packed data must use different UV sets for different material
-slots, clone the texture and set each clone's `channel`; texture clones share the image source.
-([revision 185 `Texture.channel`](https://github.com/mrdoob/three.js/blob/r185/src/textures/Texture.js#L115-L122))
+Reuse one packed texture when slots share UV and sampler state. For different UV sets or transforms, use the texture-cloning rules in the textures topic.
 
 ## Standard PBR decisions
 
@@ -142,7 +134,7 @@ For physical glass, prefer transmission rather than low opacity: use `metalness:
 |---|---|---|
 | `map`, `emissiveMap`, `sheenColorMap`, `specularMap`, `specularColorMap` | displayed/color RGB | `THREE.SRGBColorSpace` |
 | `envMap` and HDR/EXR environment textures | scene-referred radiance | `THREE.LinearSRGBColorSpace` for linear radiance |
-| `lightMap` | baked illuminance; requires a second UV set | `THREE.LinearSRGBColorSpace` when authored as linear data |
+| `lightMap` | baked illuminance; select the authored UV set | `THREE.LinearSRGBColorSpace` when authored as linear data |
 | `roughnessMap` G, `metalnessMap` B, `aoMap` R, `alphaMap` G | scalar data | `THREE.NoColorSpace` |
 | `normalMap`, `bumpMap`, `displacementMap`, `transmissionMap`, `thicknessMap` | vectors, heights, or scalars | `THREE.NoColorSpace` |
 | `anisotropyMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `sheenRoughnessMap`, `specularIntensityMap` | packed physical data | `THREE.NoColorSpace` |
@@ -156,11 +148,7 @@ Linear-sRGB texture in 0.185.1.
 [revision 185 `HDRLoader`](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js),
 [revision 185 `MeshStandardMaterial`](https://github.com/mrdoob/three.js/blob/r185/src/materials/MeshStandardMaterial.js))
 
-UV attributes are named `uv`, `uv1`, `uv2`, and `uv3`; `Texture.channel` values `0`–`3` select them.
-For a generated second set, use `geometry.setAttribute('uv1', geometry.getAttribute('uv').clone())`
-and `texture.channel = 1`, not the old `uv2` recipe.
-([`Texture.channel`](https://threejs.org/docs/pages/Texture.html#channel),
-[r151→r152](https://github.com/mrdoob/three.js/wiki/Migration-Guide#151--152))
+Texture loading, UV attribute names, `Texture.channel`, and transforms belong to the textures topic; return to the skill index for that setup.
 
 ## Alpha, blending, and depth state
 
@@ -196,14 +184,8 @@ HTML compositing because premultiplied-alpha handling changed.
 - Standard/Physical environment maps use the renderer's PMREM path. Explicit Lambert/Phong `envMap`
   textures are not automatically PMREM-filtered in WebGL; provide an appropriate prefiltered map when
   needed. Tune explicit maps with `material.envMapIntensity` and `material.envMapRotation`.
-- Tune inherited scene IBL with `scene.environmentIntensity` and `scene.environmentRotation`.
-  `envMapIntensity` does not attenuate `scene.environment` since r163.
-- Background appearance is independent: use `scene.backgroundIntensity` and
-  `scene.backgroundRotation`. r184 aligned environment/background rotations with object rotations.
-  ([r162→r163](https://github.com/mrdoob/three.js/wiki/Migration-Guide#162--r163),
-  [r183→r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184),
-  [revision 185 `Scene`](https://github.com/mrdoob/three.js/blob/r185/src/scenes/Scene.js),
-  [revision 185 WebGL programs](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js))
+- Scene/background intensity and rotation belong to the lighting topic. An explicit material map
+  uses the material's own intensity and rotation. [r185 WebGL material uniforms](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLMaterials.js)
 - For WebGPU NodeMaterials, use the renderer's node environment path; do not assume a WebGL
   `envMap` or WebGL shader define is portable.
 
@@ -243,25 +225,9 @@ HTML compositing because premultiplied-alpha handling changed.
 - Disable unused Physical lobes and maps. Budget dynamic lights and shadows with the lighting owner.
 - Measure on target hardware and inspect renderer statistics; do not infer performance from class names.
 
-## Custom-material boundary and common corrections
+## Custom-material boundary
 
-Shader tutorials belong to `shaders-and-tsl`, but material decisions must respect these boundaries:
-
-- `ShaderMaterial` and `RawShaderMaterial` are `WebGLRenderer` APIs in 0.185.1. Use NodeMaterial/TSL from
-  `three/webgpu` and `three/tsl` for `WebGPURenderer`.
-  ([`ShaderMaterial`](https://threejs.org/docs/pages/ShaderMaterial.html),
-  [r170→r171](https://github.com/mrdoob/three.js/wiki/Migration-Guide#170--171))
-- `ShaderMaterial` supplies built-in declarations; `RawShaderMaterial` does not. A raw material must
-  declare and update transforms such as model-view itself; an identity matrix is not a working substitute.
-- Custom fragment output must apply output color-space conversion and, when intended, tone mapping.
-  With explicit `THREE.GLSL3`, use GLSL 3 `in`/`out`, declare a fragment output, and use `texture()`;
-  replacing only `texture2D()` is invalid. Output meaningful alpha only when transparency is enabled.
-  ([custom-material color management](https://threejs.org/manual/en/color-management.html#roles-of-color-spaces),
-  [revision 185 WebGL program construction](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLProgram.js#L810-L828))
-- Use `THREE.Timer` in 0.185.1, call `timer.update()` once per frame, then read `timer.getElapsed()`;
-  `Clock` was deprecated in r183.
-  ([`Timer`](https://threejs.org/docs/pages/Timer.html),
-  [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183))
+Route custom GLSL declarations, renderer-owned matrix uniforms, shader output conversion, and TSL graphs through the shaders topic in the skill index. `ShaderMaterial` and `RawShaderMaterial` use `WebGLRenderer`; NodeMaterials use `WebGPURenderer`. [r185 node-material exports](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterials.js)
 
 ## Official sources
 

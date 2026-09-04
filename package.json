@@ -1,0 +1,16 @@
+{
+  "name": "threejs-skill-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --test checks/*.test.mjs",
+    "check:browser": "node checks/browser.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "three": "0.185.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

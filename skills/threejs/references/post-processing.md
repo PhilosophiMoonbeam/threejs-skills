@@ -15,6 +15,7 @@ bloom, AO, DOF, custom passes, selective effects, composition, cost, and disposa
 
 ## WebGL: minimal working chain
 
+<!-- check: post-webgl -->
 ```js
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -64,6 +65,7 @@ Set renderer DPR before constructing the composer; its constructor snapshots the
 Pass logical CSS dimensions to both `setSize()` methods. The composer applies its
 stored ratio and propagates effective dimensions to every pass.
 
+<!-- check: post-resize -->
 ```js
 function resize(width, height, dpr = Math.min(window.devicePixelRatio, 2)) {
   camera.aspect = width / height;

@@ -31,6 +31,30 @@ These five classes are exported by `three/webgpu` in 0.185.1. Import TSL node fu
 
 Classic `ShaderMaterial` and `RawShaderMaterial` remain the WebGL GLSL path; do not mix their shader strings into a TSL graph.
 
+## Minimal TSL material
+
+Use this with an existing `WebGPURenderer` scene. The caller attaches the returned material, calls `update(elapsedSeconds)` from its existing loop, and removes all consumers before `dispose()`. Build the graph once; change uniform values during animation.
+
+<!-- check: tsl-material -->
+```js
+import * as THREE from 'three/webgpu';
+import { uniform } from 'three/tsl';
+
+function createPulseMaterial() {
+  const phase = uniform(0);
+  const tint = uniform(new THREE.Color(0x3b82f6)); // Linear-sRGB working value.
+  const material = new THREE.MeshBasicNodeMaterial();
+  material.colorNode = tint.mul(phase.sin().mul(0.25).add(0.75));
+  return {
+    material,
+    update(elapsedSeconds) { phase.value = elapsedSeconds; },
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+`colorNode` supplies linear surface color; leave display conversion to the renderer or final pipeline. TSL operations construct a shader graph; JavaScript arithmetic on node objects does not become shader arithmetic. Inside `Fn`, use node assignment methods and TSL control flow such as `If` for GPU-dependent branches. [r185 UniformNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/core/UniformNode.js), [r185 NodeMaterial](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterial.js), [r185 TSL flow](https://github.com/mrdoob/three.js/blob/r185/src/nodes/tsl/TSLCore.js)
+
 ## Minimal direct-screen ShaderMaterial
 
 This explicit GLSL3 form uses a time uniform, keeps calculations linear, and applies display transforms once:
@@ -188,6 +212,37 @@ Sources: [r153→r154](https://github.com/mrdoob/three.js/wiki/Migration-Guide#1
 For NodeMaterial work, import renderer-facing classes from `three/webgpu` and node functions from `three/tsl`; the class choices are listed above. Assign nodes such as `colorNode`, `positionNode`, or `normalNode` and let the node system emit backend code. In 0.185.1, use `packNormalToRGB()`/`unpackRGBToNormal()` rather than the renamed direction/color helpers. In the `material.positionNode` hook, r185 does not make `positionLocal` reflect internal morphing, skinning, batching, or instancing updates; use `positionGeometry` when you need the pre-transformed geometry attribute, and explicitly compose any required internal transforms yourself. Outside that hook, `positionLocal` remains the node for the material's transformed local-position pipeline. See the [r184→r185 migration entry](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), [r185 NodeMaterial position setup](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterial.js#L763-L807), and [r185 position nodes](https://github.com/mrdoob/three.js/blob/r185/src/nodes/accessors/Position.js).
 
 For WebGL fragment-texture computation, import `GPUComputationRenderer` from `three/addons/misc/GPUComputationRenderer.js`; it manages float RGBA variables, dependencies, and ping-pong render targets. For WebGPU-capable compute, use TSL compute/storage nodes with `WebGPURenderer`. `setAnimationLoop()` initializes the renderer before the loop callback; for on-demand compute, call `await renderer.init()` before synchronous `renderer.compute(computeNode)` (or use `computeAsync()`). See [GPUComputationRenderer](https://threejs.org/docs/pages/GPUComputationRenderer.html), [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html), [Renderer.compute](https://threejs.org/docs/pages/Renderer.html#compute), and [TSL compute](https://threejs.org/docs/pages/TSL.html#compute).
+
+### Minimal compute and readback
+
+This one-shot kernel writes one scalar per invocation and returns CPU data. The caller owns the `WebGPURenderer` and keeps it alive until the returned promise settles. The helper owns its kernel and storage buffer. It needs no scene or animation loop.
+
+<!-- check: tsl-compute -->
+```js
+import { Fn, instancedArray, instanceIndex } from 'three/tsl';
+
+async function computeSquares(renderer, count = 64) {
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('Invalid element count');
+  await renderer.init();
+  const values = instancedArray(count, 'float');
+  const kernel = Fn(() => {
+    const i = instanceIndex.toFloat();
+    values.element(instanceIndex).assign(i.mul(i));
+  })().compute(count);
+  try {
+    renderer.compute(kernel);
+    const buffer = await renderer.getArrayBufferAsync(values.value);
+    return new Float32Array(buffer);
+  } finally {
+    kernel.dispose();
+    values.value.dispose();
+  }
+}
+```
+
+`Fn` defines GPU work, `.compute(count)` sets dispatch bounds, and `renderer.compute()` submits it. Reading the CPU-side attribute array does not retrieve GPU writes; await readback. Keep readback out of animation loops unless required, since it adds transfer/synchronization cost. Kernel disposal releases compute pipeline bindings; dispose the separately owned storage attribute too. [r185 storage-array factories](https://github.com/mrdoob/three.js/blob/r185/src/nodes/accessors/Arrays.js), [r185 ComputeNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/gpgpu/ComputeNode.js), [r185 Renderer compute/readback](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js), [r185 BufferAttribute disposal](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferAttribute.js)
+
+This independent-element kernel is suitable for checking both WebGPU and the WebGL 2 fallback. Do not extrapolate to workgroup synchronization, atomics, or storage textures; verify each required backend feature separately.
 
 ## Failures, diagnostics, and lifecycle
 

@@ -78,32 +78,66 @@ item reports `onError` and is then ended; consequently `onLoad` still fires afte
 [revision 185 manager counters](https://github.com/mrdoob/three.js/blob/r185/src/loaders/LoadingManager.js) ·
 [revision 185 GLTFLoader accounting](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/GLTFLoader.js)
 
-For a timeout, pass the operation's dedicated manager explicitly, race its `loadAsync()` promise with a
-timer, and call that manager's `abort()` on timeout. The manager must belong only to this load batch;
-never pass a shared manager, or a timeout could cancel unrelated requests. Clear the timer in `finally`.
-Abort works only for participating loaders and browsers supporting `AbortSignal.any()`; it does not stop
-CPU parsing already in progress.
-[revision 185 LoadingManager.abort](https://github.com/mrdoob/three.js/blob/r185/src/loaders/LoadingManager.js)
+A cancelled load can still finish decoding. Use this helper for unshared operations, with a dedicated manager and a synchronous, non-throwing `release(value)` that frees its late result. `onSettled()` is a synchronous, non-throwing cleanup hook for the underlying load, even when the caller has already received cancellation. The caller owns successful results; the helper owns results arriving after cancellation or timeout. Manager abort is best-effort, requires participating loaders and browser support for `AbortSignal.any()`, and does not interrupt CPU parsing. [r185 LoadingManager.abort](https://github.com/mrdoob/three.js/blob/r185/src/loaders/LoadingManager.js)
 
+<!-- check: owned-load -->
 ```js
-async function loadWithTimeout(loader, manager, url, timeoutMs) {
-  let timerId;
-  const timeout = new Promise((_, reject) => {
-    timerId = setTimeout(() => {
-      manager.abort();
-      reject(new Error(`Timed out loading ${url}`));
-    }, timeoutMs);
+function loadOwned(loader, url, { signal, timeoutMs = 30000, release, onSettled = () => {} }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timerId;
+    function cleanup() {
+      clearTimeout(timerId);
+      signal?.removeEventListener('abort', onAbort);
+    }
+    function cancel(reason) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(reason);
+      loader.manager.abort();
+    }
+    function onAbort() {
+      cancel(signal.reason);
+    }
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+    if (signal?.aborted) {
+      reject(signal.reason);
+      onSettled();
+      return; // Do not start work for an already-retired owner.
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timerId = setTimeout(() => cancel(new Error(`Timed out loading ${url}`)), timeoutMs);
+    try {
+      loader.loadAsync(url).then((value) => {
+        if (settled) {
+          release(value);
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      }, fail).finally(onSettled);
+    } catch (error) {
+      fail(error);
+      onSettled();
+    }
   });
-
-  try {
-    return await Promise.race([loader.loadAsync(url), timeout]);
-  } finally {
-    clearTimeout(timerId);
-  }
 }
 ```
 
+`FileLoader` coalesces simultaneous identical URLs across managers. Shared requests need one asset/cache owner that aborts only after its last consumer retires; a dedicated manager alone does not isolate those requests. [r185 FileLoader request sharing](https://github.com/mrdoob/three.js/blob/r185/src/loaders/FileLoader.js)
+
+Call the owner's `AbortController.abort()` during teardown. After awaiting a successful result, check the lifetime signal again before attaching it: if teardown won that interval, release the result instead. A failed compound load can leave partially created resources; `release` covers returned results only, so track partial resources at their creation boundaries when the loader exposes them.
+
 ## Minimal glTF/GLB pattern with compression
+
+Assume the component supplies `signal` from its lifetime controller and `releaseGLTF(gltf)`, an asset-scope disposer that deduplicates owned geometry, materials, textures, bitmaps, and skeletons. Register its abort action before starting this operation. Use a dedicated manager/decoder pair for this independently cancellable load.
 
 ```js
 const manager = new THREE.LoadingManager();
@@ -119,17 +153,24 @@ const gltfLoader = new GLTFLoader(manager)
   .setKTX2Loader(ktx2Loader)
   .setMeshoptDecoder(MeshoptDecoder);
 
-try {
-  const gltf = await gltfLoader.loadAsync("models/compressed.glb");
-  scene.add(gltf.scene);
-  // Preserve gltf.animations with the scene when the application supports animation.
-} catch (error) {
-  showAssetError(error);
+function retireDecoders() {
+  dracoLoader.dispose();
+  ktx2Loader.dispose();
 }
 
-// At final application teardown, after all loads:
-dracoLoader.dispose();
-ktx2Loader.dispose();
+try {
+  const gltf = await loadOwned(gltfLoader, "models/compressed.glb", {
+    signal, release: releaseGLTF, onSettled: retireDecoders,
+  });
+  if (signal.aborted) releaseGLTF(gltf);
+  else {
+    scene.add(gltf.scene);
+    // Retain gltf.scene and gltf.animations in the owner's asset record.
+    // On retirement: remove the scene, then releaseGLTF(gltf).
+  }
+} catch (error) {
+  if (!signal.aborted) showAssetError(error);
+}
 ```
 
 `KHR_draco_mesh_compression` requires `setDRACOLoader`; `KHR_texture_basisu` requires
@@ -141,57 +182,16 @@ resolved relative to the addon module (`examples/jsm/libs/basis`), so normally o
 set the path to that directory. Never pair `three@0.185.1` code with another package version's
 decoder assets. `detectSupport(renderer)` is synchronous; WebGPU requires `await renderer.init()`
 first, not deprecated `detectSupportAsync()`.
-Reuse one `DRACOLoader` and `KTX2Loader` where possible; use `setWorkerLimit()` to keep decoder
+Reuse `DRACOLoader` and `KTX2Loader` within a shared lifetime; use `setWorkerLimit()` to keep decoder
 workers within the application's CPU budget, and dispose each loader only after its final load.
 [revision 185 compressed-glTF example](https://github.com/mrdoob/three.js/blob/r185/examples/webgl_loader_gltf_compressed.html) ·
 [revision 185 DRACOLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/DRACOLoader.js) ·
 [revision 185 GLTFLoader compression extensions](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/GLTFLoader.js) ·
 [revision 185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
 
-## HDR and EXR environments
+## HDR and EXR transport
 
-With `WebGLRenderer`, explicit PMREM preprocessing owns a render target:
-
-```js
-const hdr = await new HDRLoader(manager).loadAsync("env/studio.hdr");
-hdr.mapping = THREE.EquirectangularReflectionMapping;
-const pmrem = new THREE.PMREMGenerator(renderer);
-const envTarget = pmrem.fromEquirectangular(hdr);
-scene.environment = envTarget.texture;
-hdr.dispose();
-pmrem.dispose();
-
-// When retiring this environment:
-scene.environment = null;
-envTarget.dispose();
-```
-
-With `WebGPURenderer`, retain the HDR source; the renderer handles environment preprocessing:
-
-```js
-const hdr = await new HDRLoader(manager).loadAsync("env/studio.hdr");
-hdr.mapping = THREE.EquirectangularReflectionMapping;
-scene.environment = hdr;
-scene.background = hdr; // Optional.
-
-// When retiring every use of this source:
-scene.environment = null;
-scene.background = null;
-hdr.dispose();
-```
-
-Use `EXRLoader` identically for OpenEXR transport. HDR/EXR loaders default to
-`LinearSRGBColorSpace` for scene-referred HDR; do not label normal, roughness, metalness, or other
-data maps `LinearSRGBColorSpace`. Such maps use `NoColorSpace` (the default), while color/albedo/
-emissive PNG/JPEG inputs use `SRGBColorSpace`. If an HDR/EXR file is deliberately a data map,
-override its color space to `NoColorSpace` before its first upload.
-For WebGL, keep the PMREM render target because it owns the allocation. For WebGPU, keep the
-HDR/EXR source texture until every environment or background reference is retired.
-[Color-management input spaces](https://threejs.org/manual/en/color-management.html#input-color-space) ·
-[revision 185 HDRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js) ·
-[revision 185 EXRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/EXRLoader.js) ·
-[revision 185 PMREM return type](https://github.com/mrdoob/three.js/blob/r185/src/extras/PMREMGenerator.js) ·
-[revision 185 WebGPU retained environment](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_loader_gltf.html)
+Use `HDRLoader.loadAsync()` or `EXRLoader.loadAsync()` for environment files. Return the loaded texture to its owner; mapping, color-space annotation, WebGL/WebGPU preprocessing, and environment teardown belong to the textures topic in the skill index. [r185 HDRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js), [r185 EXRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/EXRLoader.js)
 
 ## Legacy model formats
 
