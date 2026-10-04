@@ -23,7 +23,17 @@ The skill targets exactly npm `three@0.186.1` (revision 186). This published pat
 
 ## Installation
 
-Clone the repository, then place the complete package in the directory where your agent discovers skills:
+Use the [skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add PhilosophiMoonbeam/threejs-skills
+```
+
+Follow the prompts to choose your agent and installation scope.
+
+### Manual installation
+
+For a custom skill directory, clone the repository and copy the complete package:
 
 ```bash
 git clone https://github.com/PhilosophiMoonbeam/threejs-skills.git
