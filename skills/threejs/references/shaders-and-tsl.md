@@ -1,10 +1,10 @@
-# Shaders and TSL — Three.js 0.185.1
+# Shaders and TSL — Three.js 0.186.1
 
 ## Scope
 
 This reference owns custom WebGL shaders, built-in material patching, shader coordinate spaces, output conversion, and the boundary to TSL/WebGPU compute.
 For textures as resources, render-target setup, or post-processing graph design, use those named topics instead.
-All APIs and engine internals below target Three.js 0.185.1 exactly.
+All APIs and engine internals below target npm `three@0.186.1` (r186) exactly.
 
 ## Choose the renderer path first
 
@@ -12,10 +12,10 @@ All APIs and engine internals below target Three.js 0.185.1 exactly.
 - Prefer `ShaderMaterial` when Three.js declarations, attributes, precision, defines, and chunk helpers are useful.
 - Prefer `RawShaderMaterial` only when every GLSL declaration and interface should be explicit.
 - For new WebGPU-capable or renderer-agnostic shader work, use NodeMaterial and TSL, not either GLSL material.
-- `WebGLRenderer` requires WebGL 2 in 0.185.1. Its shader program is GLSL ES 3.00 even when a non-raw `ShaderMaterial` uses legacy source spellings through compatibility macros.
+- `WebGLRenderer` requires WebGL 2 in 0.186.1. Its shader program is GLSL ES 3.00 even when a non-raw `ShaderMaterial` uses legacy source spellings through compatibility macros.
 - Set `glslVersion`; never put `#version` inside shader source.
 
-Official GLSL basis: [WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html), [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html), and [revision 185 WebGLProgram conversion](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLProgram.js#L800-L828).
+Official GLSL basis: [WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html), [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html), and [r186 WebGLProgram conversion](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLProgram.js).
 
 ## NodeMaterial and TSL selection
 
@@ -27,9 +27,37 @@ Use the closest built-in node material rather than the base `NodeMaterial` when 
 - `LineBasicNodeMaterial` — line primitives.
 - `SpriteNodeMaterial` — sprites and their screen-facing quad behavior.
 
-These five classes are exported by `three/webgpu` in 0.185.1. Import TSL node functions from `three/tsl`; do not import node-material classes from that module. TSL graphs avoid GLSL string rewriting and can be emitted for the renderer backend, which is the practical reason to choose this path for WebGPU, compute, or code that must also work with the renderer's WebGL 2 fallback. See [official NodeMaterial guidance](https://threejs.org/docs/llms.txt#4-node-material-classes-for-webgputsl), [r185 node-material exports](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterials.js), and [NodeMaterial](https://threejs.org/docs/pages/NodeMaterial.html).
+These classes are exported by `three/webgpu` in 0.186.1. Import TSL functions from `three/tsl`, not node-material classes. `WebGPURenderer` emits backend shaders for native WebGPU or its WebGL 2 fallback. Separately, r186 adds a `WebGLNodesHandler` bridge for `WebGLRenderer`; this does not give that renderer compute or the WebGPU post-processing stack. [r186 node-material exports](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterials.js), [r186 bridge limits](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/WebGLNodesHandler.js)
 
 Classic `ShaderMaterial` and `RawShaderMaterial` remain the WebGL GLSL path; do not mix their shader strings into a TSL graph.
+
+### Node materials on WebGLRenderer
+
+Install one handler before compiling or rendering node materials. No separate node library setup is required: the addon installs its `BasicNodeLibrary` through its renderer proxy. This factory owns only its material; the caller owns the renderer, geometry, scene membership, and loop.
+
+<!-- check: tsl-webgl-bridge -->
+```js
+import { WebGLNodesHandler } from 'three/addons/tsl/WebGLNodesHandler.js';
+import { MeshBasicNodeMaterial, Color } from 'three/webgpu';
+import { uniform } from 'three/tsl';
+
+function createWebGLNodeMaterial(renderer) {
+  renderer.setNodesHandler(new WebGLNodesHandler());
+  const phase = uniform(0);
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = uniform(new Color(0x3b82f6))
+    .mul(phase.sin().mul(0.25).add(0.75));
+  return {
+    material,
+    update(elapsedSeconds) { phase.value = elapsedSeconds; },
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+Use an existing `WebGLRenderer` imported from `three`; attach the material to a mesh and update the uniform from the existing loop. This factory installs the handler once per renderer setup, not once per mesh or frame. Remove consumers before material disposal; the handler releases its cached uniform groups on the material's `dispose` event. It has no separate public `dispose()` method.
+
+The bridge does not support VSM shadows, MRT, transmission, storage textures, or the WebGPU post-processing stack. Do not share geometry between instanced meshes on this path. Treat fog/environment changes as requiring the documented disposal/rebuild path, not automatic parity. Keep WebGL `EffectComposer` for post-processing and `GPUComputationRenderer` for texture computation. These restrictions do not describe `WebGPURenderer({ forceWebGL: true })`, which is a different renderer/backend path. [r186 handler setup, limits, and material disposal](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/WebGLNodesHandler.js), [r186 setNodesHandler](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
 
 ## Minimal TSL material
 
@@ -53,7 +81,7 @@ function createPulseMaterial() {
 }
 ```
 
-`colorNode` supplies linear surface color; leave display conversion to the renderer or final pipeline. TSL operations construct a shader graph; JavaScript arithmetic on node objects does not become shader arithmetic. Inside `Fn`, use node assignment methods and TSL control flow such as `If` for GPU-dependent branches. [r185 UniformNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/core/UniformNode.js), [r185 NodeMaterial](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterial.js), [r185 TSL flow](https://github.com/mrdoob/three.js/blob/r185/src/nodes/tsl/TSLCore.js)
+`colorNode` supplies linear surface color; leave display conversion to the renderer or final pipeline. TSL operations construct a shader graph; JavaScript arithmetic on node objects does not become shader arithmetic. Inside `Fn`, use node assignment methods and TSL control flow such as `If` for GPU-dependent branches. [r186 UniformNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/UniformNode.js), [r186 NodeMaterial](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js), [r186 TSL flow](https://github.com/mrdoob/three.js/blob/r186/src/nodes/tsl/TSLCore.js)
 
 ## Minimal direct-screen ShaderMaterial
 
@@ -100,11 +128,11 @@ renderer.setAnimationLoop((timestamp) => {
 });
 ```
 
-`THREE.Color` values are interpreted in the working Linear-sRGB space. The last two chunks are for a shader rendered directly to the canvas. Omit them when writing an intermediate render target that a later `OutputPass` will tone-map and convert; applying both paths double-transforms the image. See [Color management](https://threejs.org/manual/en/color-management.html) and [revision 185 built-in output order](https://github.com/mrdoob/three.js/blob/r185/src/renderers/shaders/ShaderLib/meshbasic.glsl.js).
+`THREE.Color` values are interpreted in the working Linear-sRGB space. The last two chunks are for a shader rendered directly to the canvas. Omit them when writing an intermediate render target that a later `OutputPass` will tone-map and convert; applying both paths double-transforms the image. See [Color management](https://threejs.org/manual/en/color-management.html) and [r186 built-in output order](https://github.com/mrdoob/three.js/blob/r186/src/renderers/shaders/ShaderLib/meshbasic.glsl.js).
 
 ## GLSL source forms
 
-For non-raw `ShaderMaterial`, the default source form may use `attribute`, `varying`, `texture2D`, `textureCube`, and `gl_FragColor`; 0.185.1 supplies compatibility macros. With `glslVersion: THREE.GLSL3`, use `in`/`out`, `texture`, `textureSize`, and a declared fragment output. The `#define gl_FragColor outColor` above lets 0.185.1 output chunks target that declared GLSL3 output.
+For non-raw `ShaderMaterial`, the default source form may use `attribute`, `varying`, `texture2D`, `textureCube`, and `gl_FragColor`; 0.186.1 supplies compatibility macros. With `glslVersion: THREE.GLSL3`, use `in`/`out`, `texture`, `textureSize`, and a declared fragment output. The `#define gl_FragColor outColor` above lets 0.186.1 output chunks target that declared GLSL3 output.
 
 `RawShaderMaterial` receives no prepended declarations or compatibility macros. A valid GLSL3 raw vertex shader therefore declares precision, inputs, and renderer-owned matrices:
 
@@ -128,7 +156,7 @@ const raw = new THREE.RawShaderMaterial({
 });
 ```
 
-Declare `modelMatrix`, `modelViewMatrix`, `projectionMatrix`, or `normalMatrix` as needed, but do not duplicate them in the JS `uniforms` object: `WebGLRenderer` uploads recognized per-camera and per-object values. Raw shaders also receive no automatic output-transform helpers; implement the required conversion explicitly, or use them only for intermediate linear output. See [RawShaderMaterial](https://threejs.org/docs/pages/RawShaderMaterial.html) and [revision 185 matrix uploads](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js#L2567-L2767).
+Declare `modelMatrix`, `modelViewMatrix`, `projectionMatrix`, or `normalMatrix` as needed, but do not duplicate them in the JS `uniforms` object: `WebGLRenderer` uploads recognized per-camera and per-object values. Raw shaders also receive no automatic output-transform helpers; implement the required conversion explicitly, or use them only for intermediate linear output. See [RawShaderMaterial](https://threejs.org/docs/pages/RawShaderMaterial.html) and [r186 matrix uploads](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js).
 
 ## Uniforms, varyings, and spaces
 
@@ -156,7 +184,7 @@ vec3 V = normalize(-vViewPosition);
 float fresnel = pow(1.0 - clamp(dot(V, N), 0.0, 1.0), 3.0);
 ```
 
-Do not combine view-space `normalMatrix * normal` with world-space `cameraPosition - worldPosition`. See [Matrix3.getNormalMatrix](https://threejs.org/docs/pages/Matrix3.html#getNormalMatrix) and [revision 185 packing helpers](https://github.com/mrdoob/three.js/blob/r185/src/renderers/shaders/ShaderChunk/packing.glsl.js).
+Do not combine view-space `normalMatrix * normal` with world-space `cameraPosition - worldPosition`. See [Matrix3.getNormalMatrix](https://threejs.org/docs/pages/Matrix3.html#getNormalMatrix) and [r186 packing helpers](https://github.com/mrdoob/three.js/blob/r186/src/renderers/shaders/ShaderChunk/packing.glsl.js).
 
 ## Textures and color roles
 
@@ -172,7 +200,7 @@ Apply transforms explicitly in the vertex shader: `vUv = (uMapTransform * vec3(u
 
 ## Safe `onBeforeCompile` patches
 
-`onBeforeCompile` customizes `WebGLRenderer` built-in materials only. Patch a verified 0.185.1 anchor, assert that it occurs exactly once, and retain the compiled uniform reference outside `userData` when serialization matters:
+`onBeforeCompile` customizes `WebGLRenderer` built-in materials only. Patch a verified 0.186.1 anchor, assert that it occurs exactly once, and retain the compiled uniform reference outside `userData` when serialization matters:
 
 ```js
 const tint = new THREE.Color(0xff8844);
@@ -180,7 +208,7 @@ let compiledShader;
 const material = new THREE.MeshStandardMaterial();
 material.onBeforeCompile = (shader) => {
   const anchor = '#include <color_fragment>';
-  if (shader.fragmentShader.split(anchor).length !== 2) throw new Error('0.185.1 shader anchor changed');
+  if (shader.fragmentShader.split(anchor).length !== 2) throw new Error('0.186.1 shader anchor changed');
   shader.uniforms.uTint = { value: tint };
   shader.fragmentShader = `uniform vec3 uTint;
 ${shader.fragmentShader.replace(
@@ -195,23 +223,25 @@ Uniform-only changes (`tint.set(...)`) do not require recompilation. If generate
 
 Position deformation at `begin_vertex` must also update the corresponding object-space normal before the normal pipeline, or lighting will be wrong. Use a defensible normal reconstruction, or TSL/NodeMaterial. Do not silently accept unchanged normals.
 
-## 0.185.1 chunks and migration traps
+## 0.186.1 chunks and migration traps
 
-Chunks are renderer implementation details, not a stable public composition API. Useful verified 0.185.1 stages include `beginnormal_vertex`, `begin_vertex`, `defaultnormal_vertex`, `project_vertex`, `normal_fragment_begin`, `map_fragment`, `opaque_fragment`, `tonemapping_fragment`, and `colorspace_fragment`; preserve the dependencies and order used by the matching 0.185.1 `ShaderLib` shader.
+Chunks are renderer implementation details, not a stable public composition API. Useful verified 0.186.1 stages include `beginnormal_vertex`, `begin_vertex`, `defaultnormal_vertex`, `project_vertex`, `normal_fragment_begin`, `map_fragment`, `opaque_fragment`, `tonemapping_fragment`, and `colorspace_fragment`; preserve the dependencies and order used by the matching 0.186.1 `ShaderLib` shader.
 
 - `encodings_fragment` became `colorspace_fragment` in r154.
 - `output_fragment` became `opaque_fragment` in r154; `opaque_fragment` is not the final display transform.
 - `lightmap_fragment` was removed in r164.
-- In 0.185.1, replace deprecated `inverseTransformDirection()` with `transformNormalByInverseViewMatrix()` for normals or `transformDirectionByInverseViewMatrix()` for directions.
-- Do not use obsolete `extensions.derivatives`, `fragDepth`, `drawBuffers`, or `shaderTextureLOD`. WebGL 2 provides derivatives, `gl_FragDepth`, declared MRT outputs, and `textureLod`; 0.185.1 `ShaderMaterial.extensions` exposes only `clipCullDistance` and `multiDraw`.
+- Replace deprecated `inverseTransformDirection()` with `transformNormalByInverseViewMatrix()` for normals or `transformDirectionByInverseViewMatrix()` for directions.
+- Do not use obsolete `extensions.derivatives`, `fragDepth`, `drawBuffers`, or `shaderTextureLOD`. WebGL 2 provides derivatives, `gl_FragDepth`, declared MRT outputs, and `textureLod`; 0.186.1 `ShaderMaterial.extensions` exposes only `clipCullDistance` and `multiDraw`.
 
-Sources: [r153→r154](https://github.com/mrdoob/three.js/wiki/Migration-Guide#153--154), [r163→r164](https://github.com/mrdoob/three.js/wiki/Migration-Guide#163--r164), [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), and [revision 185 ShaderMaterial source](https://github.com/mrdoob/three.js/blob/r185/src/materials/ShaderMaterial.js).
+Sources: [r153→r154](https://github.com/mrdoob/three.js/wiki/Migration-Guide#153--154), [r163→r164](https://github.com/mrdoob/three.js/wiki/Migration-Guide#163--r164), [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), and [r186 ShaderMaterial source](https://github.com/mrdoob/three.js/blob/r186/src/materials/ShaderMaterial.js).
 
 ## TSL, WebGPU, and compute boundary
 
-For NodeMaterial work, import renderer-facing classes from `three/webgpu` and node functions from `three/tsl`; the class choices are listed above. Assign nodes such as `colorNode`, `positionNode`, or `normalNode` and let the node system emit backend code. In 0.185.1, use `packNormalToRGB()`/`unpackRGBToNormal()` rather than the renamed direction/color helpers. In the `material.positionNode` hook, r185 does not make `positionLocal` reflect internal morphing, skinning, batching, or instancing updates; use `positionGeometry` when you need the pre-transformed geometry attribute, and explicitly compose any required internal transforms yourself. Outside that hook, `positionLocal` remains the node for the material's transformed local-position pipeline. See the [r184→r185 migration entry](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), [r185 NodeMaterial position setup](https://github.com/mrdoob/three.js/blob/r185/src/materials/nodes/NodeMaterial.js#L763-L807), and [r185 position nodes](https://github.com/mrdoob/three.js/blob/r185/src/nodes/accessors/Position.js).
+Import renderer-facing node classes from `three/webgpu` and functions from `three/tsl`. Assign hooks such as `colorNode`, `positionNode`, or `normalNode`; let the node system emit backend code. Use `packNormalToRGB()`/`unpackRGBToNormal()`, not the old direction/color helpers. In `material.positionNode`, use `positionGeometry` for the original geometry attribute; do not assume `positionLocal` carries prior morphing, skinning, batching, or instancing updates into the separately built hook. Explicitly compose required transforms. Outside that hook, `positionLocal` represents the transformed local-position pipeline. [Historical r184→r185 delta](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185), [r186 position setup](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js), [r186 position nodes](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/Position.js)
 
 For WebGL fragment-texture computation, import `GPUComputationRenderer` from `three/addons/misc/GPUComputationRenderer.js`; it manages float RGBA variables, dependencies, and ping-pong render targets. For WebGPU-capable compute, use TSL compute/storage nodes with `WebGPURenderer`. `setAnimationLoop()` initializes the renderer before the loop callback; for on-demand compute, call `await renderer.init()` before synchronous `renderer.compute(computeNode)` (or use `computeAsync()`). See [GPUComputationRenderer](https://threejs.org/docs/pages/GPUComputationRenderer.html), [WebGPURenderer](https://threejs.org/docs/pages/WebGPURenderer.html), [Renderer.compute](https://threejs.org/docs/pages/Renderer.html#compute), and [TSL compute](https://threejs.org/docs/pages/TSL.html#compute).
+
+Prewarm a completed kernel with `await renderer.compileComputeAsync(kernel)` or an array of kernels before interactive dispatch. It initializes the renderer if needed and compiles pipelines without dispatching the kernels; synchronous `renderer.compute(kernel)` still performs the work. Keep compilation and graph creation out of frame loops. [r186 compute compilation and dispatch](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js)
 
 ### Minimal compute and readback
 
@@ -230,6 +260,7 @@ async function computeSquares(renderer, count = 64) {
     values.element(instanceIndex).assign(i.mul(i));
   })().compute(count);
   try {
+    await renderer.compileComputeAsync(kernel);
     renderer.compute(kernel);
     const buffer = await renderer.getArrayBufferAsync(values.value);
     return new Float32Array(buffer);
@@ -240,9 +271,17 @@ async function computeSquares(renderer, count = 64) {
 }
 ```
 
-`Fn` defines GPU work, `.compute(count)` sets dispatch bounds, and `renderer.compute()` submits it. Reading the CPU-side attribute array does not retrieve GPU writes; await readback. Keep readback out of animation loops unless required, since it adds transfer/synchronization cost. Kernel disposal releases compute pipeline bindings; dispose the separately owned storage attribute too. [r185 storage-array factories](https://github.com/mrdoob/three.js/blob/r185/src/nodes/accessors/Arrays.js), [r185 ComputeNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/gpgpu/ComputeNode.js), [r185 Renderer compute/readback](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js), [r185 BufferAttribute disposal](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferAttribute.js)
+`Fn` defines GPU work, `.compute(count)` sets dispatch bounds, and `renderer.compute()` submits it. Reading the CPU-side attribute array does not retrieve GPU writes; await readback. Keep readback out of animation loops unless required, since it adds transfer/synchronization cost. Kernel disposal releases compute pipeline bindings; dispose the separately owned storage attribute too. [r186 storage-array factories](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/Arrays.js), [r186 ComputeNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/gpgpu/ComputeNode.js), [r186 Renderer compute/readback](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js), [r186 BufferAttribute disposal](https://github.com/mrdoob/three.js/blob/r186/src/core/BufferAttribute.js)
 
 This independent-element kernel is suitable for checking both WebGPU and the WebGL 2 fallback. Do not extrapolate to workgroup synchronization, atomics, or storage textures; verify each required backend feature separately.
+
+### Local arrays, structs, and soft particles
+
+For fixed shader-local data, use `array([vec3(1, 0, 0), vec3(0, 1, 0)]).element(indexNode)` or `array('float', count)` inside a graph. This is not an uploadable storage buffer; choose `uniformArray` for CPU-updated values and storage arrays for compute output. `struct({ min: 'vec3', max: 'vec3' })` returns a constructor; instantiate it with nodes and access members with `.get('min')`. Define layouts once and respect backend alignment for buffer-backed structures. [r186 array](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/ArrayNode.js), [r186 struct](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/StructNode.js), [r186 layout](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/StructTypeNode.js)
+
+For depth-intersection fading, import `softParticles` from `three/addons/tsl/utils/SoftParticles.js` and assign `material.opacityNode = softParticles({ distance: 1, contrast: 2 })` on a transparent particle node material. It multiplies base `opacity` by a fade against opaque viewport depth; `distance` is in world units. The r186 helper converts perspective depth with camera near/far: do not assume compatibility with orthographic, logarithmic, or reversed-depth inputs. It requires a supported viewport-depth capture path; it is not a general transparency solution or a promised `WebGLNodesHandler` feature. [r186 SoftParticles](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/utils/SoftParticles.js)
+
+Do not import the removed TSL `append` export or the removed `PMREMUtils` namespace. Use `.toStack()` when explicitly adding a node statement to the active `Fn` stack; assignment and control-flow helpers already add their statements. Do not replace internal PMREM utilities with deep imports: use the public renderer-compatible `PMREMGenerator` for environment preprocessing. [r186 stack helper](https://github.com/mrdoob/three.js/blob/r186/src/nodes/tsl/TSLCore.js), [r186 TSL exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.TSL.js), [r186 WebGPU exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.WebGPU.js)
 
 ## Failures, diagnostics, and lifecycle
 
@@ -252,5 +291,6 @@ This independent-element kernel is suitable for checking both WebGPU and the Web
 - Do not assume `mix` beats coherent branches, vector packing reduces cost, CPU precomputation is cheaper, or lookup textures improve performance; measure.
 - `wireframeLinewidth` is ignored and line width remains one pixel.
 - Dispose materials and owned textures/render targets when their lifetime ends; dispose superseded materials after replacement.
+- Stop the loop and await outstanding compute/readback before releasing buffers. If this component owns a `WebGPURenderer`, finish teardown with `await renderer.dispose()`; `WebGLRenderer.dispose()` remains synchronous. [r186 async renderer disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js)
 
 Official diagnostics and lifecycle references: [WebGLRenderer.debug and compileAsync](https://threejs.org/docs/pages/WebGLRenderer.html#debug), [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html), and [Material.dispose](https://threejs.org/docs/pages/Material.html#dispose).

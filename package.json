@@ -9,7 +9,7 @@
   },
   "devDependencies": {
     "playwright": "1.62.1",
-    "three": "0.185.1"
+    "three": "0.186.1"
   },
   "engines": {
     "node": ">=22"

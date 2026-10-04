@@ -1,9 +1,9 @@
-# Textures and Render Targets — Three.js 0.185.1
+# Textures and Render Targets — Three.js 0.186.1
 
 ## Scope
 
 Use this reference for texture loading and annotation, UV selection, sampling, environment maps, render/depth targets,
-texture ownership, and GPU-memory decisions in 0.185.1. Materials own slot-to-channel and color-role tables; post-processing owns multi-pass composition; shaders own custom sampling.
+texture ownership, and GPU-memory decisions in 0.186.1. Materials own slot-to-channel and color-role tables; post-processing owns multi-pass composition; shaders own custom sampling.
 
 ## Decisions and invariants
 
@@ -16,12 +16,12 @@ texture ownership, and GPU-memory decisions in 0.185.1. Materials own slot-to-ch
 - Configure dimensions, format, wrapping, filtering, mipmaps, and anisotropy before first upload.
 - Materials do not own textures. The application must define shared-resource ownership.
 - A render target owns more than its exposed texture; dispose the target, not only `.texture`.
-- Keep addons and core on 0.185.1 and import addons only through `three/addons/...`.
+- Keep addons and core on 0.186.1 and import addons only through `three/addons/...`.
 
 Color-role rules: [Color management](https://threejs.org/manual/en/color-management.html#input-color-space),
-[`Texture.colorSpace`](https://threejs.org/docs/pages/Texture.html#colorSpace), [revision 185
-HDRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/HDRLoader.js), and
-[revision 185 EXRLoader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/EXRLoader.js).
+[`Texture.colorSpace`](https://threejs.org/docs/pages/Texture.html#colorSpace), [r186
+HDRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/HDRLoader.js), and
+[r186 EXRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/EXRLoader.js).
 
 ## Minimal loading pattern
 
@@ -51,7 +51,7 @@ Replacing one non-null map with another normally does not require recompilation.
 ## UV sets and texture transforms
 
 Geometry attribute names are `uv`, `uv1`, `uv2`, and `uv3`. `Texture.channel` selects them as `0`, `1`, `2`, and `3` respectively; AO has no hard-wired `uv2` path.
-The rename and per-texture selection landed before revision 185: [Migration r151→r152](https://github.com/mrdoob/three.js/wiki/Migration-Guide#151--152),
+The rename and per-texture selection predate r186: [Migration r151→r152](https://github.com/mrdoob/three.js/wiki/Migration-Guide#151--152),
 [Migration r150→r151](https://github.com/mrdoob/three.js/wiki/Migration-Guide#150--151).
 
 ```js
@@ -63,13 +63,15 @@ uv.setXY(vertexIndex, u, v);
 uv.needsUpdate = true;
 ```
 
-A texture has one UV selector and transform. If material slots need different UV sets or transforms, clone the texture and configure each clone; clones share image data. Keep every clone and the shared image under explicit lifetime ownership. [r185 Texture.copy](https://github.com/mrdoob/three.js/blob/r185/src/textures/Texture.js)
+A texture has one UV selector and transform. If material slots need different UV sets or transforms, clone the texture and configure each clone; clones share image data through `texture.source`. Keep every clone and the shared image under explicit lifetime ownership. [r186 Texture.copy](https://github.com/mrdoob/three.js/blob/r186/src/textures/Texture.js)
+
+In r186, the canonical source class is `THREE.TextureSource` and its type flag is `isTextureSource`. Replace old `Source`/`isSource` uses; `Source` remains a deprecated compatibility export in this exact release, not a removed API. Ordinary texture loading creates its source automatically; construct `new THREE.TextureSource(image)` only when directly managing source data. [r186 TextureSource and historical alias](https://github.com/mrdoob/three.js/blob/r186/src/textures/TextureSource.js#L230-L261), [r186 public exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.Core.js#L39-L40)
 
 Changing `texture.channel` after a material has rendered changes the shader's required UV
-attribute; set `material.needsUpdate = true` after such a change. r185 WebGL shader parameters
+attribute; set `material.needsUpdate = true` after such a change. r186 WebGL shader parameters
 enable only the UV attributes selected by material texture channels.
-[revision 185 Texture.channel](https://github.com/mrdoob/three.js/blob/r185/src/textures/Texture.js#L115-L122) ·
-[revision 185 WebGLPrograms UV selection](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLPrograms.js#L46-L52)
+[r186 Texture.channel](https://github.com/mrdoob/three.js/blob/r186/src/textures/Texture.js) ·
+[r186 WebGLPrograms UV selection](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLPrograms.js)
 
 `texture.offset`, `repeat`, `rotation`, and `center` update its UV transform; offsets are not restricted to `[0, 1]`. Keep `matrixAutoUpdate` enabled unless manually maintaining `texture.matrix`.
 
@@ -82,7 +84,7 @@ enable only the UV attributes selected by material texture channels.
   [`Migration r169→r170`](https://github.com/mrdoob/three.js/wiki/Migration-Guide#169--170)
 - `DataTexture` defaults to nearest filtering and `generateMipmaps = false`; opt into other behavior.
 - `CompressedTexture` cannot generate mipmaps; the container must supply the mip chain.
-- The 0.185.1 `WebGLRenderer` requires WebGL 2, so NPOT textures may use repeat wrapping and mipmaps; do not disable either merely because dimensions are NPOT.
+- The 0.186.1 `WebGLRenderer` requires WebGL 2, so NPOT textures may use repeat wrapping and mipmaps; do not disable either merely because dimensions are NPOT.
   [`WebGLRenderer`](https://threejs.org/docs/pages/WebGLRenderer.html), [`Migration r162→r163`](https://github.com/mrdoob/three.js/wiki/Migration-Guide#r162--r163)
 
 ```js
@@ -111,7 +113,7 @@ const dataTexture = new THREE.DataTexture(values, 2, 1, THREE.RGBAFormat);
 dataTexture.needsUpdate = true;
 ```
 
-Use KTX2 for GPU-compressed delivery; the container owns its compressed mip levels. In r185,
+Use KTX2 for GPU-compressed delivery; the container owns its compressed mip levels. In r186,
 `KTX2Loader` derives the texture color space from the KTX2 data-format descriptor: valid sRGB,
 linear, and Display-P3 metadata is preserved, while unspecified/unsupported metadata becomes
 `NoColorSpace`. Keep that result unless the asset metadata is known to be wrong. Reuse one
@@ -136,11 +138,11 @@ async function loadKTX2Texture(renderer, url) {
 // const texture = await loadKTX2Texture(renderer, '/assets/material.ktx2');
 ```
 
-Keep the returned color-space metadata. `detectSupport()` must follow WebGPU initialization; the packaged transcoder defaults are revision-specific. [r185 KTX2Loader](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/loaders/KTX2Loader.js)
+Keep the returned color-space metadata. `detectSupport()` must follow WebGPU initialization; the packaged transcoder defaults are revision-specific. [r186 KTX2Loader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/KTX2Loader.js)
 
 ## HDR, EXR, environments, and PMREM
 
-Use the 0.185.1 `HDRLoader` name; `RGBELoader` is only a deprecated compatibility subclass. [Migration r179→r180](https://github.com/mrdoob/three.js/wiki/Migration-Guide#179--180)
+Use the 0.186.1 `HDRLoader` name; `RGBELoader` is only a deprecated compatibility subclass. [Migration r179→r180](https://github.com/mrdoob/three.js/wiki/Migration-Guide#179--180)
 
 ```js
 import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
@@ -180,9 +182,11 @@ function disposeEnvironment() {
 }
 ```
 
-`fromEquirectangular()` returns a render target whose lifetime extends beyond the generator's. [r185 PMREMGenerator](https://github.com/mrdoob/three.js/blob/r185/src/extras/PMREMGenerator.js)
+`fromEquirectangular()` returns a render target whose lifetime extends beyond the generator's. [r186 PMREMGenerator](https://github.com/mrdoob/three.js/blob/r186/src/extras/PMREMGenerator.js)
 
-With `WebGPURenderer`, assign the HDR/EXR source directly and retain it until every environment/background consumer is retired; let the renderer preprocess it. Do not pass a WebGL PMREM target into that path. [r185 WebGPU environment example](https://github.com/mrdoob/three.js/blob/r185/examples/webgpu_loader_gltf.html)
+r186 PMREM uses a Golden-Angle spiral blur for `fromScene()` with nonzero `sigma`; recheck blurred scene environments when upgrading rather than assuming identical appearance. The output remains packed cube-UV with `CubeUVReflectionMapping` in both renderer paths. Do not replace it with a later-release mapping/layout. [r186 WebGL spiral blur](https://github.com/mrdoob/three.js/blob/r186/src/extras/PMREMGenerator.js#L564-L577), [r186 WebGL cube-UV output](https://github.com/mrdoob/three.js/blob/r186/src/extras/PMREMGenerator.js#L717-L720), [r186 common spiral blur](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/extras/PMREMGenerator.js#L668-L673), [r186 common cube-UV output](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/extras/PMREMGenerator.js#L850-L854)
+
+With `WebGPURenderer`, assign the HDR/EXR source directly and retain it until every environment/background consumer is retired; let the renderer preprocess it. Do not pass a WebGL PMREM target into that path. [r186 WebGPU environment example](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_loader_gltf.html)
 
 Clear `scene.environment` and `scene.background` before disposing their final owned texture. If an explicit PMREM target is used, dispose it after its last consumer; dispose the generator after preprocessing. Materials own environment response; lighting owns scene/background intensity and orientation.
 
@@ -198,8 +202,11 @@ target.depthTexture = new THREE.DepthTexture(1024, 1024, THREE.UnsignedIntType);
 
 const previousTarget = renderer.getRenderTarget();
 renderer.setRenderTarget(target);
-renderer.render(offscreenScene, offscreenCamera);
-renderer.setRenderTarget(previousTarget);
+try {
+  renderer.render(offscreenScene, offscreenCamera);
+} finally {
+  renderer.setRenderTarget(previousTarget);
+}
 consumerMaterial.map = target.texture;
 consumerMaterial.needsUpdate = true; // Needed when the material has already rendered.
 ```
@@ -207,8 +214,8 @@ consumerMaterial.needsUpdate = true; // Needed when the material has already ren
 Restore the previous target rather than assuming `null`; reusable rendering can be nested.
 Ordinary render-target textures are `NoColorSpace` linear intermediates and do not generate
 mipmaps by default. Before disposal, clear every scene, material, and uniform reference to the
-target's attachments. `target.dispose()` releases its color and depth attachments; do not dispose
-target-owned textures separately.
+target's attachments. Dispose the target to release its owned color/depth allocation; do not dispose
+target-owned textures separately. Shared depth has a renderer-specific ownership contract below.
 Screen output applies `renderer.outputColorSpace`; intermediate targets do not automatically receive
 screen conversion. A final custom `ShaderMaterial` screen pass normally ends:
 
@@ -220,17 +227,33 @@ gl_FragColor = result;
 
 Include tone mapping only when that final pass should apply renderer tone mapping. Do not apply final output conversion blindly to intermediate targets.
 See [output color space](https://threejs.org/manual/en/color-management.html#output-color-space),
-[`RenderTarget`](https://threejs.org/docs/pages/RenderTarget.html), and [revision 185
-RenderTarget source](https://github.com/mrdoob/three.js/blob/r185/src/core/RenderTarget.js).
+[`RenderTarget`](https://threejs.org/docs/pages/RenderTarget.html), and [r186
+RenderTarget source](https://github.com/mrdoob/three.js/blob/r186/src/core/RenderTarget.js).
 
 Dynamic `CubeCamera` capture is expensive: hide the reflective object as needed, update only at the required cadence, and dispose its cube render target.
 
+### Viewport units
+
+Set `target.viewport` and `target.scissor` in target pixels; neither should be multiplied by canvas DPR. In common `Renderer`/`WebGPURenderer`, canvas viewport/scissor use logical pixels and the renderer applies its pixel ratio, while offscreen targets use a ratio of `1`. `renderer.setViewport()` configures the canvas target, not the currently bound offscreen target. [r186 common target scaling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L1763-L1787), [r186 setViewport](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L2330-L2344)
+
+For r186 `WebGLRenderer`, `setRenderTarget(target)` copies the target-pixel viewport/scissor, but direct `renderer.setViewport()`/`setScissor()` still apply renderer DPR even while a target is bound. Configure the target rectangles before binding it instead of assuming the common-renderer setter behavior. [r186 WebGL setters](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js#L799-L858), [r186 WebGL target binding](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js#L3041-L3049)
+
+### Multisample storage
+
+`RenderTarget` has `storeMultisampledColorBuffer`, `storeMultisampledDepthBuffer`, and `storeMultisampledStencilBuffer`, all defaulting to `true`. Set color storage to `false` only for a fully redrawn pass whose consumers read resolved color; preserve it when accumulating without clearing or when transmission needs a mid-pass framebuffer copy. In WebGPU, sampled multisampled depth is not resolved: keep depth storage `true` for depth-based effects. Depth/stencil can be discarded only when no later consumer needs those multisampled values. Storage flags are distinct from `resolveColorBuffer`/`resolveDepthBuffer`/`resolveStencilBuffer`; WebGPU does not support depth resolves. Do not assume identical bandwidth savings across backends. [r186 storage/resolve contract](https://github.com/mrdoob/three.js/blob/r186/src/core/RenderTarget.js#L175-L251), [r186 WebGPU discard selection](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPUBackend.js#L948-L951), [r186 WebGL multisample handling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js#L2342-L2396)
+
+### Shared depth ownership
+
+In common `Renderer`/`WebGPURenderer`, attaching a `DepthTexture` with no owner records that target in `depthTexture.renderTarget`; another target can borrow it without taking ownership. Keep attachment dimensions and sample counts compatible and resize them together. The common renderer resizes/releases the depth allocation only for its recorded owner. Retire borrowing targets before disposing or resizing that owner; do not separately dispose its depth texture. [r186 depth attachment ownership](https://github.com/mrdoob/three.js/blob/r186/src/core/RenderTarget.js#L335-L340), [r186 depth resize/sample handling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Textures.js#L110-L168), [r186 owner-only depth release](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Textures.js#L550-L578)
+
+This is not a portable `WebGLRenderer` lifetime guarantee: disposing a WebGL target disposes its attached depth texture regardless of `depthTexture.renderTarget`. Prefer a separate depth attachment per target there; never dispose one target while another live target still consumes its shared depth. [r186 WebGL depth release](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js#L409-L419)
+
 ## Ownership, disposal, and memory
 
-- Track owned textures separately from material references; use ref-counting or asset-scope teardown.
+- Track owned textures separately from material references; use ref-counting or asset-scope teardown. Exclude target-owned attachments from standalone texture disposal sets.
 - Deduplicate aliases before disposal. Dispose an owned texture only after its last consumer is gone.
 - Clear live scene, material, and uniform references; then dispose materials and owned textures.
-- Dispose render/depth/cube targets through `target.dispose()`; do not separately dispose target-owned textures.
+- Dispose render/depth/cube targets through `target.dispose()` after outstanding readbacks settle; do not separately dispose target-owned textures. Shared depth follows the renderer-specific owner rules above.
 - `ImageBitmap` memory is application-owned: after all aliases are gone, call `bitmap.close()` and `texture.dispose()`.
 - Reuse loader instances where useful; `KTX2Loader.dispose()` releases its worker pool.
 
@@ -252,5 +275,5 @@ Atlases reduce state changes but require padding and careful mips/repeat. Sharin
 `renderer.info.memory.textures` is a resource count, not a byte measurement.
 
 Official lifecycle guidance: [disposing objects](https://threejs.org/manual/en/how-to-dispose-of-objects.html#textures),
-[`RenderTarget.dispose`](https://threejs.org/docs/pages/RenderTarget.html#dispose), and [revision 185
-render-target texture management](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Textures.js).
+[`RenderTarget.dispose`](https://threejs.org/docs/pages/RenderTarget.html#dispose), and [r186
+render-target texture management](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Textures.js).

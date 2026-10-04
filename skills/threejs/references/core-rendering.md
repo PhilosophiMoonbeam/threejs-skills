@@ -1,10 +1,10 @@
-# Core Rendering — Three.js 0.185.1
+# Core Rendering — Three.js 0.186.1
 
 ## Scope
 
-Own the scene graph, cameras, renderer lifecycle, renderer-loop scheduling, resizing, transforms, color output, disposal, and render-performance decisions. [revision 185 Renderer loop](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js#L1919-L1926), [revision 185 Timer](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js#L117-L151)
+Own the scene graph, cameras, renderer lifecycle, renderer-loop scheduling, resizing, transforms, color output, disposal, and render-performance decisions. [r186 Renderer loop](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L2058-L2073), [r186 Timer](https://github.com/mrdoob/three.js/blob/r186/src/core/Timer.js)
 Use the geometry, materials, lighting and shadows, textures and render targets, animation, asset loading, interaction and controls, shaders and TSL, and post-processing topics for their details.
-All APIs below target exactly Three.js 0.185.1.
+All APIs below target exactly Three.js 0.186.1.
 
 ## Imports and renderer decision
 
@@ -16,9 +16,10 @@ import * as THREE from 'three';
 - Use `WebGLRenderer` from `three` for the mature WebGL 2 path and broad material/addon support.
 - Use `WebGPURenderer` from `three/webgpu` when WebGPU, node materials, or TSL is a requirement. It selects WebGPU when available and otherwise falls back to a WebGL 2 backend; `{ forceWebGL: true }` deliberately selects that fallback.
 - WebGPU/renderer classes come from `three/webgpu`; TSL functions come from `three/tsl`; ordinary addons use `three/addons/...`.
-- `WebGLRenderer` is ready after construction. `WebGPURenderer.setAnimationLoop()` asynchronously initializes its backend before installing the loop. For on-demand rendering or synchronous feature queries, `await renderer.init()` before calling `renderer.render()`; do not use deprecated `renderAsync()`. [WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer.html), [Renderer initialization and loop](https://threejs.org/docs/pages/Renderer.html#init), [r185 WebGPURenderer source](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgpu/WebGPURenderer.js#L12-L93)
-- For `Renderer`/`WebGPURenderer`, call `await renderer.init()` first, then use synchronous `renderer.hasFeature(name)` for selected-backend capability checks; r185 throws when `hasFeature()` is called before backend initialization. `hasFeatureAsync()` is deprecated. [r185 `Renderer.js` implementation](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js#L2845-L2880)
+- `WebGLRenderer` is ready after construction. `WebGPURenderer.setAnimationLoop()` asynchronously initializes its backend before installing the loop. For on-demand rendering or synchronous feature queries, `await renderer.init()` before calling `renderer.render()`; do not use deprecated `renderAsync()`. [WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer.html), [r186 Renderer initialization and loop](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js), [r186 WebGPURenderer](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPURenderer.js)
+- For `Renderer`/`WebGPURenderer`, call `await renderer.init()` first, then use synchronous `renderer.hasFeature(name)` for selected-backend capability checks; r186 throws when called before initialization. `hasFeatureAsync()` is deprecated. [r186 Renderer feature checks](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L3033-L3043)
 - WebGL defaults `alpha` to `false`; WebGPU defaults it to `true`. Prefer an opaque clear/background unless HTML compositing is intentional. r185 changed WebGPU premultiplied-alpha behavior. [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185)
+- When another library changes a shared raw WebGL context, call `renderer.resetState()` before Three.js resumes rendering. This is not a per-frame requirement for an exclusively owned context. Common `Renderer` requires initialization first; its WebGPU backend makes this a no-op. [r186 common resetState](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L2302-L2316), [r186 WebGLRenderer](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
 
 ```js
 import * as THREE from 'three/webgpu';
@@ -30,15 +31,15 @@ renderer.render(scene, camera);
 
 ## Browser import maps
 
-For browser-only CDN loading, choose one import map and pin every Three.js URL to `0.185.1`:
+For browser-only CDN loading, choose one import map and pin every Three.js URL to `0.186.1`:
 
 ```html
 <!-- WebGL -->
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
   }
 }
 </script>
@@ -49,16 +50,16 @@ For browser-only CDN loading, choose one import map and pin every Three.js URL t
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
-    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
-    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
   }
 }
 </script>
 ```
 
-With npm or a bundler, install `three@0.185.1`; its package exports provide the same boundaries without an import map. [r185 package exports](https://github.com/mrdoob/three.js/blob/r185/package.json)
+With npm or a bundler, install `three@0.186.1`; its package exports provide the same boundaries without an import map. [r186 package exports](https://github.com/mrdoob/three.js/blob/r186/package.json)
 
 ## Minimal WebGL lifecycle
 
@@ -118,14 +119,16 @@ function dispose() {
   renderer.setAnimationLoop(null);
   resizeObserver.disconnect();
   timer.dispose();
+  scene.remove(mesh);
+  mesh.dispose(); // Notify object consumers; ordinary Mesh does not own geometry/material.
+  scene.dispose(); // Base disposal is not recursive.
   geometry.dispose();
   material.dispose();
-  scene.remove(mesh);
-  renderer.dispose();
+  renderer.dispose(); // WebGLRenderer disposal is synchronous.
 }
 ```
 
-For continuous rendering, use `renderer.setAnimationLoop()`; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` is deprecated in Three.js 0.185.1. [Timer](https://threejs.org/docs/pages/Timer.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
+For continuous rendering, use `renderer.setAnimationLoop()`; it also supports WebXR. Update one `Timer` at frame start, then reuse its stable `getDelta()` and `getElapsed()` values. `Clock` remains deprecated in Three.js 0.186.1. [r186 Timer](https://github.com/mrdoob/three.js/blob/r186/src/core/Timer.js), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
 This uses the `setPixelRatio()` strategy: `setSize()` receives CSS-pixel dimensions and applies the renderer's pixel ratio once. Do not pass `width * dpr` and also leave a non-`1` pixel ratio configured. If physical dimensions are managed manually instead, set the renderer pixel ratio to `1` and pass the multiplied drawing-buffer dimensions. [Responsive rendering manual](https://threejs.org/manual/en/responsive.html)
 
 ### Application-created canvas
@@ -148,7 +151,7 @@ Keep the remaining baseline setup. At the end of its `dispose()`, after stopping
 canvas.remove();
 ```
 
-Leave a host-owned canvas in place. Renderer disposal releases renderer resources; DOM removal is a separate ownership action. [r185 WebGLRenderer disposal](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js)
+Leave a host-owned canvas in place. Renderer disposal releases renderer resources; DOM removal is a separate ownership action. With `WebGPURenderer`, remove an owned canvas only after `await renderer.dispose()` completes. [r186 WebGLRenderer disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js#L1082-L1109), [r186 common Renderer disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L2692-L2726)
 
 ## Continuous versus on-demand rendering
 
@@ -202,7 +205,7 @@ camera.bottom = -span / 2;
 camera.updateProjectionMatrix();
 ```
 
-`ArrayCamera` subcamera viewports are drawing-buffer pixel rectangles, not normalized fractions. Recompute them after every renderer resize. [revision 185 array-camera example](https://github.com/mrdoob/three.js/blob/r185/examples/webgl_camera_array.html)
+With `WebGLRenderer`, `ArrayCamera` subcamera viewports are drawing-buffer pixel rectangles, not normalized fractions. Recompute them after every renderer resize; the layout below is WebGL-specific. With common `Renderer`/`WebGPURenderer`, use logical pixels for canvas rendering (`renderer.getSize()`), but target pixels for offscreen rendering. Both common backends apply the canvas pixel ratio themselves. [r186 WebGL array-camera example](https://github.com/mrdoob/three.js/blob/r186/examples/webgl_camera_array.html), [r186 WebGPU viewport scaling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPUBackend.js#L2260-L2294), [r186 fallback viewport scaling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl-fallback/WebGLBackend.js#L1271-L1330)
 
 ```js
 const bufferSize = new THREE.Vector2();
@@ -241,7 +244,7 @@ function captureEnvironment(reflector) {
 // At owner teardown: target.dispose().
 ```
 
-Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Three.js 0.185.1. [CubeCamera](https://threejs.org/docs/pages/CubeCamera.html), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
+Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Three.js 0.186.1. [r186 CubeCamera](https://github.com/mrdoob/three.js/blob/r186/src/cameras/CubeCamera.js), [r182→r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
 
 ## Scene graph and transforms
 
@@ -258,7 +261,7 @@ Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Th
 - With it `false`, call `updateMatrix()` after changing position/quaternion/scale.
 - If application code writes `matrix` directly while automatic updates are off, set `matrixWorldNeedsUpdate = true` before a non-forced world update.
 - `updateMatrixWorld(force)` updates descendants; reserve `force = true` for an intentional full refresh.
-- `updateWorldMatrix(updateParents, updateChildren, force)` gives explicit ancestor/descendant control. In Three.js 0.185.1 it honors `matrixWorldNeedsUpdate`. [Object3D](https://threejs.org/docs/pages/Object3D.html#updateWorldMatrix), [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185)
+- `updateWorldMatrix(updateParents, updateChildren, force)` gives explicit ancestor/descendant control. In Three.js 0.186.1 it honors `matrixWorldNeedsUpdate`. [r186 Object3D](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js), [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185)
 
 ## Renderer output and color
 
@@ -266,27 +269,53 @@ Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Th
 - Lighting calculations use Linear-sRGB. `Color` stores Linear-sRGB working values; hex and CSS colors are interpreted as sRGB and converted automatically.
 - `color.setRGB(r, g, b)` treats values as working-space components unless its optional source color space is supplied. Linear/HDR values may exceed 1.
 - Mark color PNG/JPEG textures with `texture.colorSpace = THREE.SRGBColorSpace`; non-color/data maps generally retain `THREE.NoColorSpace`. Color HDR data such as EXR uses `THREE.LinearSRGBColorSpace`. Texture ownership belongs to the textures topic. [Color management](https://threejs.org/manual/en/color-management.html)
-- `renderer.toneMapping = THREE.ACESFilmicToneMapping` is an artistic choice; Three.js 0.185.1 still defaults to `NoToneMapping`.
-- Direct rendering to the screen applies renderer tone mapping and output-color-space conversion; ordinary offscreen render targets remain in their configured texture color space. A WebGL `EffectComposer` should end with `OutputPass` for final tone mapping and color conversion. [Color management](https://threejs.org/manual/en/color-management.html), [WebGLRenderer output](https://threejs.org/docs/pages/WebGLRenderer.html#outputColorSpace), [r154→r155](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155), [revision 185 OutputPass](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/postprocessing/OutputPass.js#L74-L83)
-- A WebGPU `RenderPipeline` normally leaves `outputColorTransform` enabled; disable it only when the pipeline graph explicitly adds `renderOutput()`. `preserveDrawingBuffer` is a WebGL-only renderer option and normally remains `false`; for a WebGL screenshot, render immediately before `canvas.toBlob()` or `toDataURL()`. [revision 185 RenderPipeline](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/RenderPipeline.js#L205-L218), [revision 185 WebGPURenderer options](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgpu/WebGPURenderer.js#L24-L35), [Screenshot guidance](https://threejs.org/manual/en/tips.html#taking-a-screenshot-of-the-canvas)
+- `renderer.toneMapping = THREE.ACESFilmicToneMapping` is an artistic choice; Three.js 0.186.1 still defaults to `NoToneMapping`.
+- Direct rendering to the screen applies renderer tone mapping and output-color-space conversion; ordinary offscreen render targets remain in their configured texture color space. A WebGL `EffectComposer` should end with `OutputPass` for final tone mapping and color conversion. [Color management](https://threejs.org/manual/en/color-management.html), [r186 WebGLRenderer output](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js), [r154→r155](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155), [r186 OutputPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/OutputPass.js)
+- A WebGPU `RenderPipeline` normally leaves `outputColorTransform` enabled; disable it only when the pipeline graph explicitly adds `renderOutput()`. `preserveDrawingBuffer` is a WebGL-only renderer option and normally remains `false`; for a WebGL screenshot, render immediately before `canvas.toBlob()` or `toDataURL()`. [r186 RenderPipeline](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/RenderPipeline.js), [r186 WebGPURenderer options](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPURenderer.js), [Screenshot guidance](https://threejs.org/manual/en/tips.html#taking-a-screenshot-of-the-canvas)
 
 ## Disposal and ownership
 
-Stop producers before freeing consumers: clear the animation loop, cancel any queued on-demand frame, disconnect observers/listeners, then dispose `Timer` and controls. Dispose every owned geometry, material, texture, render target, and `Skeleton`; remove objects; finally dispose the renderer. Removing an `Object3D` does not dispose GPU resources, and disposing a material does not dispose its textures. Shared resources must be disposed exactly once by their owner. Asset-loading and textures topics define ownership at load boundaries. [Disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html)
+Stop producers before freeing consumers: stop the animation loop, cancel queued on-demand frames, disconnect observers/listeners, and stop new async loads/readbacks. Wait for tracked loads and GPU readbacks to settle while their renderer and targets remain alive; settlement does not imply success. Then dispose timers, controls, and animation bindings, detach retiring objects, notify object consumers, and free each owned allocation exactly once after its last user. Dispose the renderer last. [Disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html)
+
+- In r186, base `Object3D.dispose()` only dispatches a `dispose` event. It does not remove the object, visit children, or dispose geometry, material, texture, or skeleton. Notify each retiring object separately; common renderer object caches listen for this event. Removing an object alone is not disposal. [r186 Object3D.dispose](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js#L1656-L1675), [r186 RenderObject listeners](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/RenderObject.js#L346-L360)
+- Custom `Object3D` subclasses that override `dispose()` must call `super.dispose()` to preserve notification, then release only their owned resources. Resource-specific overrides differ: `InstancedMesh` releases its morph texture; `BatchedMesh` also releases its internal geometry and textures. Exclude override-owned allocations from separate disposal sets; do not apply a generic “dispose object, then every geometry” traversal to them. Shared geometry/material/texture ownership remains external. [r186 InstancedMesh.dispose](https://github.com/mrdoob/three.js/blob/r186/src/objects/InstancedMesh.js#L390-L405), [r186 BatchedMesh.dispose](https://github.com/mrdoob/three.js/blob/r186/src/objects/BatchedMesh.js#L1496-L1520)
+- Material disposal does not dispose its textures. Asset loading and textures define load-boundary ownership.
+- `WebGLRenderer.dispose()` remains synchronous. Common `Renderer`/`WebGPURenderer.dispose()` is asynchronous in r186: await it before replacing the renderer or removing an owned canvas. Do not treat base object notification as release of every compute or GPU allocation. [r186 WebGL disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js#L1082-L1109), [r186 common disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L2692-L2726)
+- With the native WebGPU backend, final renderer disposal destroys a renderer-created `GPUDevice`, but does not destroy a supplied device. A supplied device remains caller-owned: its owner must retire it after its last user. Awaiting renderer disposal is not a guarantee that every internal GPU allocation on a supplied device has been released. Producer shutdown, readback settlement, and owned scene-resource cleanup remain required either way. [r186 WebGPUBackend disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPUBackend.js#L3252-L3277)
+
+For an initialized `WebGPURenderer` using its default renderer-created device and owning the same ordinary mesh, geometry, material, scene, observer, and timer as the baseline, use this asynchronous teardown. The caller first stops other producers; `pendingReadbacks` contains every outstanding readback promise. Adapt resource ownership before adding controls, loaders, or targets. Rejected readbacks are reported after all settlements and cleanup:
+
+<!-- check: webgpu-teardown -->
+```js
+async function disposeWebGPU({ renderer, pendingReadbacks, resizeObserver, timer, scene, mesh, geometry, material }) {
+  await renderer.setAnimationLoop(null);
+  resizeObserver.disconnect();
+  const results = await Promise.allSettled(pendingReadbacks);
+  timer.dispose();
+  scene.remove(mesh);
+  mesh.dispose();
+  scene.dispose();
+  geometry.dispose();
+  material.dispose();
+  await renderer.dispose();
+  const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+  if (failures.length) throw new AggregateError(failures, 'Readback failed during teardown');
+}
+```
 
 ## Render performance
 
-- Measure draw calls with `renderer.info.render.calls` for WebGL or `renderer.info.render.drawCalls` for WebGPU, and triangles with `renderer.info.render.triangles` for either renderer; reset behavior changes if `renderer.info.autoReset` is disabled. [revision 185 WebGLInfo](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLInfo.js#L5-L16), [revision 185 common Info](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Info.js#L44-L73)
+- Measure draw calls with `renderer.info.render.calls` for WebGL or `renderer.info.render.drawCalls` for WebGPU, and triangles with `renderer.info.render.triangles` for either renderer; reset behavior changes if `renderer.info.autoReset` is disabled. [r186 WebGLInfo](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLInfo.js), [r186 common Info](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Info.js)
 - Reduce draw calls through instancing or deliberate geometry merging; keep material-count and update-cost tradeoffs visible.
-- Keep frustum culling enabled. Ordinary object culling uses a bounding sphere; recompute it after vertex or instance bounds change. For vertex deformation performed only in a shader, enlarge the CPU bound or disable culling for that object. [revision 185 Frustum source](https://github.com/mrdoob/three.js/blob/r185/src/math/Frustum.js#L125-L147)
+- Keep frustum culling enabled. `Mesh`, `Line`, and `Points` implement r186 `intersectsFrustum(frustum)` using object/geometry bounding spheres; `Sprite` uses its sprite bound. The base `Object3D` method is an empty override hook, not a general scene/group query. A custom renderable can override it for its own bound; return a boolean and handle `FrustumArray` when supporting common-renderer `ArrayCamera`. Recompute bounds after vertex/instance changes; enlarge CPU bounds or disable culling for shader-only deformation. Culling affects rendering, not animation evaluation. [r186 Object3D hook](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js#L1063-L1072), [r186 Mesh implementation](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js#L218-L230), [r186 common renderer culling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L3264-L3294), [r186 Frustum](https://github.com/mrdoob/three.js/blob/r186/src/math/Frustum.js)
 - Cap device pixel ratio when fill rate dominates; lower render-target resolution for expensive offscreen effects.
 - Avoid per-frame allocations, forced whole-tree matrix updates, redundant world-space queries, and unconditional cube-map captures.
-- Update static shadows portably per light: set `light.shadow.autoUpdate = false`, then set `light.shadow.needsUpdate = true` whenever that light's shadow must refresh. The equivalent `renderer.shadowMap` flags are WebGL-specific. `PCFShadowMap` is the soft WebGL default in Three.js 0.185.1; do not select deprecated `PCFSoftShadowMap`. [revision 185 common renderer](https://github.com/mrdoob/three.js/blob/r185/src/renderers/common/Renderer.js#L697-L709), [revision 185 ShadowNode](https://github.com/mrdoob/three.js/blob/r185/src/nodes/lighting/ShadowNode.js#L853-L874), [revision 185 WebGLShadowMap](https://github.com/mrdoob/three.js/blob/r185/src/renderers/webgl/WebGLShadowMap.js#L86-L95), [r181→r182](https://github.com/mrdoob/three.js/wiki/Migration-Guide#181--182)
+- Update static shadows portably per light: set `light.shadow.autoUpdate = false`, then set `light.shadow.needsUpdate = true` whenever that light's shadow must refresh. The equivalent `renderer.shadowMap` flags are WebGL-specific. `PCFShadowMap` is the soft WebGL default in Three.js 0.186.1; do not select deprecated `PCFSoftShadowMap`. [r186 common renderer](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js), [r186 ShadowNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/lighting/ShadowNode.js), [r186 WebGLShadowMap](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLShadowMap.js), [r181→r182](https://github.com/mrdoob/three.js/wiki/Migration-Guide#181--182)
 - Use `LOD` only when its transition and memory costs are justified. Profile CPU traversal, upload bandwidth, draw calls, and fragment cost separately.
 
 ## Official sources
 
-- [Three.js revision 185 source](https://github.com/mrdoob/three.js/tree/r185)
+- [Three.js revision 186 source](https://github.com/mrdoob/three.js/tree/r186)
 - [WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html)
 - [Object3D](https://threejs.org/docs/pages/Object3D.html)
 - [PerspectiveCamera](https://threejs.org/docs/pages/PerspectiveCamera.html), [OrthographicCamera](https://threejs.org/docs/pages/OrthographicCamera.html), [ArrayCamera](https://threejs.org/docs/pages/ArrayCamera.html)

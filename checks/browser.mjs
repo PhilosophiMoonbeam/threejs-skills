@@ -21,6 +21,9 @@ const modules = {
   ktx2: `${await example('standalone-ktx2')}\nexport { loadKTX2Texture };`,
   material: `${await example('tsl-material')}\nexport { createPulseMaterial };`,
   compute: `${await example('tsl-compute')}\nexport { computeSquares };`,
+  bridge: `${await example('tsl-webgl-bridge')}\nexport { createWebGLNodeMaterial };`,
+  oit: `${await example('post-oit')}\nexport { createOITPipeline };`,
+  retroreflective: `${await example('retroreflective-material')}\nexport { createRetroreflectiveMaterial };`,
   post: `const { scene, camera, width, height } = globalThis.fixture;\n${await example('post-webgl')}
     ${await example('post-resize')}\nexport { renderer, composer, resize };`,
 };
@@ -174,19 +177,51 @@ try {
   ]);
   console.log('PASS: documented composer sizing applies DPR once and updates camera/targets.');
 
+  const bridge = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const { createWebGLNodeMaterial } = await import('/examples/bridge');
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setSize(8, 8);
+    const surface = createWebGLNodeMaterial(renderer);
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    const scene = new THREE.Scene(); scene.add(new THREE.Mesh(geometry, surface.material));
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); camera.position.z = 1;
+    try {
+      const gl = renderer.getContext();
+      const samples = [];
+      for (const time of [Math.PI / 2, 3 * Math.PI / 2]) {
+        surface.update(time); renderer.render(scene, camera);
+        const pixel = new Uint8Array(4);
+        gl.readPixels(4, 4, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        samples.push([...pixel]);
+      }
+      return samples;
+    } finally {
+      scene.clear(); geometry.dispose(); surface.dispose(); renderer.dispose();
+    }
+  });
+  assert.ok(bridge[0][2] > bridge[1][2], 'WebGLRenderer NodeMaterial bridge renders updated uniforms');
+  assert.ok(bridge[0][2] > bridge[0][0], 'WebGLRenderer NodeMaterial bridge renders the documented blue surface');
+  console.log('PASS: documented NodeMaterial bridge renders with WebGLRenderer.');
+
   for (const forceWebGL of [true, false]) {
     const result = await page.evaluate(async forceWebGL => {
       const THREE = await import('three/webgpu');
       const { createPulseMaterial } = await import('/examples/material');
       const { computeSquares } = await import('/examples/compute');
+      const { createOITPipeline } = await import('/examples/oit');
+      const { createRetroreflectiveMaterial } = await import('/examples/retroreflective');
       const renderer = new THREE.WebGPURenderer({ forceWebGL, antialias: false });
       await renderer.init();
-      if (!forceWebGL && !renderer.backend.isWebGPUBackend) { renderer.dispose(); return { skipped: true }; }
+      if (!forceWebGL && !renderer.backend.isWebGPUBackend) { await renderer.dispose(); return { skipped: true }; }
+      renderer.setSize(8, 8);
       const material = createPulseMaterial();
       const geometry = new THREE.PlaneGeometry(2, 2);
       const scene = new THREE.Scene(); scene.add(new THREE.Mesh(geometry, material.material));
       const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); camera.position.z = 1;
       const target = new THREE.RenderTarget(8, 8, { type: THREE.UnsignedByteType });
+      let retroreflective, oit;
+      const transparentMaterials = [];
       try {
         renderer.setRenderTarget(target);
         const samples = [];
@@ -197,9 +232,65 @@ try {
         renderer.setRenderTarget(null);
         // A non-workgroup multiple also exercises dispatch bounds.
         const squares = [...await computeSquares(renderer, 65)];
-        return { samples, squares };
+
+        scene.clear();
+        retroreflective = createRetroreflectiveMaterial();
+        const surface = new THREE.Mesh(geometry, retroreflective);
+        surface.rotation.y = Math.PI / 6;
+        const light = new THREE.DirectionalLight(0xffffff, 0.1); light.position.set(0, 0, 1);
+        scene.add(surface, light, light.target);
+        renderer.setRenderTarget(target);
+        const retroSamples = [];
+        for (const x of [0, Math.sqrt(3)]) {
+          light.position.set(x, 0, 1);
+          const pair = [];
+          for (const strength of [0, 1]) {
+            retroreflective.retroreflectivity = strength; retroreflective.needsUpdate = true;
+            renderer.render(scene, camera);
+            pair.push([...await renderer.readRenderTargetPixelsAsync(target, 4, 4, 1, 1)]);
+          }
+          retroSamples.push(pair);
+        }
+
+        scene.clear();
+        const oitUnsupported = renderer.backend.isWebGLBackend &&
+          !renderer.getContext().getExtension('OES_draw_buffers_indexed');
+        const oitSamples = [];
+        if (!oitUnsupported) {
+          // r186 OIT preserves beauty alpha; composite over an opaque background
+          // so the pipeline's premultiplied-alpha output transform retains RGB.
+          scene.background = new THREE.Color(0x000000);
+          const red = new THREE.MeshBasicNodeMaterial({ color: 0xff0000, opacity: 0.5, transparent: true, depthWrite: false });
+          const blue = new THREE.MeshBasicNodeMaterial({ color: 0x0000ff, opacity: 0.5, transparent: true, depthWrite: false });
+          transparentMaterials.push(red, blue);
+          const first = new THREE.Mesh(geometry, red), second = new THREE.Mesh(geometry, blue);
+          second.position.z = 0.1; scene.add(first, second);
+          renderer.setRenderTarget(target);
+          oit = createOITPipeline(renderer, scene, camera);
+          // PassNode updates once per renderer animation frame, not per render().
+          // Completing GPU readback does not guarantee that frame has advanced.
+          const renderOITFrame = () => new Promise((resolve, reject) => {
+            renderer.setAnimationLoop(() => {
+              renderer.setAnimationLoop(null);
+              try {
+                oit.render();
+                resolve(renderer.readRenderTargetPixelsAsync(target, 4, 4, 1, 1));
+              } catch (error) { reject(error); }
+            }).catch(reject);
+          });
+          for (const reverse of [false, true]) {
+            first.renderOrder = reverse ? 1 : 0; second.renderOrder = reverse ? 0 : 1;
+            oitSamples.push([...await renderOITFrame()]);
+          }
+          scene.remove(second);
+          oitSamples.push([...await renderOITFrame()]);
+        }
+        return { samples, squares, retroSamples, oitUnsupported: !!oitUnsupported, oitSamples };
       } finally {
-        scene.clear(); target.dispose(); geometry.dispose(); material.dispose(); renderer.dispose();
+        renderer.setAnimationLoop(null);
+        renderer.setRenderTarget(null); scene.clear(); oit?.dispose(); retroreflective?.dispose();
+        for (const surface of transparentMaterials) surface.dispose();
+        target.dispose(); geometry.dispose(); material.dispose(); await renderer.dispose();
       }
     }, forceWebGL);
     const backend = forceWebGL ? 'WebGL 2 fallback' : 'WebGPU';
@@ -211,6 +302,23 @@ try {
     assert.ok(result.samples[0][2] > result.samples[1][2], `${backend}: uniform changes rendered color`);
     assert.deepEqual(result.squares.slice(0, 65), Array.from({ length: 65 }, (_, i) => i * i));
     console.log(`PASS: documented TSL material renders and compute readback is correct on ${backend}.`);
+    const luminance = pixel => pixel[0] + pixel[1] + pixel[2];
+    const [[coaxialNormal, coaxialRetro], [offAxisNormal, offAxisRetro]] = result.retroSamples;
+    assert.ok(luminance(coaxialRetro) > luminance(coaxialNormal) + 3, `${backend}: retroreflection brightens a tilted surface toward a coaxial light/view`);
+    assert.ok(luminance(offAxisNormal) > luminance(offAxisRetro) + 3, `${backend}: retroreflection moves the specular lobe away from the mirror direction`);
+    console.log(`PASS: documented retroreflective material changes rendered angular response on ${backend}.`);
+    if (result.oitUnsupported) {
+      assert.ok(forceWebGL, 'native WebGPU must support independent attachment blending');
+      console.log('SKIP: OIT WebGL fallback lacks documented OES_draw_buffers_indexed; other fallback scenarios passed.');
+    } else {
+      const [forward, reverse, redOnly] = result.oitSamples;
+      assert.ok(forward[0] > 10 && forward[2] > 10 && forward[1] < 3, `${backend}: OIT renders overlapping red and blue transparency`);
+      for (let channel = 0; channel < 4; channel++) {
+        assert.ok(Math.abs(forward[channel] - reverse[channel]) <= 2, `${backend}: OIT is independent of transparent submission order`);
+      }
+      assert.ok(redOnly[0] > 10 && redOnly[2] < 3, `${backend}: removing a transparent layer changes OIT output`);
+      console.log(`PASS: documented OIT pipeline composites overlapping transparency on ${backend}.`);
+    }
   }
   assert.deepEqual(errors, [], 'browser/shader errors');
 } finally {

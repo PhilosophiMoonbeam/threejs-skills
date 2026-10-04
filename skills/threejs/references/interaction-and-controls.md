@@ -1,8 +1,8 @@
-# Interaction and Controls
+# Interaction and Controls in Three.js 0.186.1
 
 ## Scope
 
-Use this reference for pointer coordinates, raycasting, selection, and the 0.185.1 addon controls. Rendering, camera construction, materials, animation systems, and physics belong to their named topics.
+Use this reference for pointer coordinates, raycasting, selection, and the 0.186.1 addon controls. Rendering, camera construction, materials, animation systems, and physics belong to their named topics.
 
 ## Decisions and invariants
 
@@ -113,11 +113,11 @@ function disposeInteraction() {
 }
 ```
 
-Refresh matrices before a pick, including before the first render. Call `invalidatePicking()` after model animation, camera changes outside controls, and resize; a stationary pointer can gain or lose a hit. The targeted world updates honor the core matrix-invalidation contract. [r185 Raycaster](https://github.com/mrdoob/three.js/blob/r185/src/core/Raycaster.js), [r185 Object3D](https://github.com/mrdoob/three.js/blob/r185/src/core/Object3D.js)
+Refresh matrices before a pick, including before the first render. Call `invalidatePicking()` after model animation, camera changes outside controls, and resize; a stationary pointer can gain or lose a hit. The targeted world updates honor the core matrix-invalidation contract. [r186 Raycaster](https://github.com/mrdoob/three.js/blob/r186/src/core/Raycaster.js), [r186 Object3D](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js)
 
 Use pointer events for mouse, pen, and touch. Set `canvas.style.touchAction = "none"` when application gestures must suppress browser panning. For a drag, call `setPointerCapture(event.pointerId)` on pointer down, release it on pointer up, and clear drag/key state on `pointercancel`, `blur`, or control unlock.
 
-## Raycaster in 0.185.1
+## Raycaster in 0.186.1
 
 - `setFromCamera(ndc, camera)` accepts normalized device coordinates and a perspective or orthographic camera. For `set(origin, direction)`, normalize `direction`.
 - `intersectObject(object, recursive = true, target = [])` and `intersectObjects(objects, recursive = true, target = [])` return nearest-first results. `false` tests only supplied objects; a supplied `Group` normally needs recursion.
@@ -128,11 +128,19 @@ Use pointer events for mouse, pen, and touch. Set `canvas.style.touchAction = "n
 Treat an intersection as a type-dependent union, not as a fixed record:
 
 - All hits have `distance`, world-space `point`, and `object`.
-- Mesh hits may have `face` as `{ a, b, c, normal, materialIndex }`, `faceIndex`, `uv`, `uv1`, interpolated `normal`, and `barycoord`. There is no core `Face3` in 0.185.1. Attribute-derived values exist only when the geometry supplies the attributes.
+- Mesh hits may have `face` as `{ a, b, c, normal, materialIndex }`, `faceIndex`, `uv`, `uv1`, interpolated `normal`, and `barycoord`. There is no core `Face3` in 0.186.1. Attribute-derived values exist only when the geometry supplies the attributes.
 - Line and Points hits use `index`; Points also uses `distanceToRay`. Their face fields are `null`.
 - `InstancedMesh` adds `instanceId`; `BatchedMesh` adds `batchId`.
 
-These shapes and recursive defaults are defined by the [revision 185 Raycaster source](https://github.com/mrdoob/three.js/blob/r185/src/core/Raycaster.js), [revision 185 Mesh source](https://github.com/mrdoob/three.js/blob/r185/src/objects/Mesh.js), [revision 185 Line source](https://github.com/mrdoob/three.js/blob/r185/src/objects/Line.js), [revision 185 Points source](https://github.com/mrdoob/three.js/blob/r185/src/objects/Points.js), [revision 185 InstancedMesh source](https://github.com/mrdoob/three.js/blob/r185/src/objects/InstancedMesh.js), and [revision 185 BatchedMesh source](https://github.com/mrdoob/three.js/blob/r185/src/objects/BatchedMesh.js).
+These shapes and recursive defaults are defined by the [revision 186 Raycaster source](https://github.com/mrdoob/three.js/blob/r186/src/core/Raycaster.js), [revision 186 Mesh source](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js), [revision 186 Line source](https://github.com/mrdoob/three.js/blob/r186/src/objects/Line.js), [revision 186 Points source](https://github.com/mrdoob/three.js/blob/r186/src/objects/Points.js), [revision 186 InstancedMesh source](https://github.com/mrdoob/three.js/blob/r186/src/objects/InstancedMesh.js), and [revision 186 BatchedMesh source](https://github.com/mrdoob/three.js/blob/r186/src/objects/BatchedMesh.js).
+
+The official `GaussianSplat` addon implements CPU raycasting against covariance ellipsoids.
+Its hits have `index` (splat ID), `distance`, world-space `point`, and `object`, with null
+`face`, `faceIndex`, and `barycoord`; they do not identify mesh triangles or expose UVs.
+Very faint splats are skipped, and the hit approximation is not exact blended-pixel coverage.
+After the bounds test it scans splats, so use narrow target arrays or selection proxies for large
+captures rather than assuming GPU rendering also accelerates picking. Wait for loader readiness.
+[r186 GaussianSplat raycast](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/objects/GaussianSplat.js)
 
 ## Layers and selection
 
@@ -153,7 +161,7 @@ For box selection, import `SelectionBox` and `SelectionHelper` from `three/addon
 .selectBox { position: fixed; border: 1px solid #55aaff; background: #55aaff33; pointer-events: none; }
 ```
 
-`selectionBox.collection` contains selected objects; `selectionBox.instances[uuid]` and `selectionBox.batches[uuid]` contain selected IDs for instanced and batched meshes. Selection tests geometry bounding-sphere centers for ordinary objects and transform origins for instanced or batched instances; it does not test triangle overlap. `select()` clears `collection`, but not the instance or batch result maps. Before selection when the traversed hierarchy can change, reset `selectionBox.instances = {}` and `selectionBox.batches = {}`, or filter their keys to current objects. Remove custom document listeners and call `selectionHelper.dispose()`. See the [revision 185 SelectionBox source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/interactive/SelectionBox.js).
+`selectionBox.collection` contains selected objects; `selectionBox.instances[uuid]` and `selectionBox.batches[uuid]` contain selected IDs for instanced and batched meshes. Selection tests geometry bounding-sphere centers for ordinary objects and transform origins for instanced or batched instances; it does not test triangle overlap. `select()` clears `collection`, but not the instance or batch result maps. Before selection when the traversed hierarchy can change, reset `selectionBox.instances = {}` and `selectionBox.batches = {}`, or filter their keys to current objects. Remove custom document listeners and call `selectionHelper.dispose()`. See the [revision 186 SelectionBox source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/interactive/SelectionBox.js).
 
 ## Ray-to-plane and screen coordinates
 
@@ -175,11 +183,21 @@ A miss means the ray is parallel or the intersection lies behind it. Snapping `o
 
 ## Controls lifecycle
 
-Addon control constructors given a DOM element connect immediately. `enabled = false` suppresses input but leaves listeners installed. Use `disconnect()` for a temporary detach, `connect(element)` to attach again, and `dispose()` for permanent teardown. `connect()` requires the element in 0.185.1; this cutover is documented in [r174 → r175](https://github.com/mrdoob/three.js/wiki/Migration-Guide#174--175). Remove application-owned listeners and helpers separately. A control's `dispose()` does not dispose its camera, scene objects, or materials.
+Addon control constructors given a DOM element connect immediately. `enabled = false` suppresses input but leaves listeners installed. Use `disconnect()` for a temporary detach, `connect(element)` to attach again, and `dispose()` for permanent teardown. `connect()` requires the element in 0.186.1; this cutover is documented in [r174 → r175](https://github.com/mrdoob/three.js/wiki/Migration-Guide#174--175). Remove application-owned listeners and helpers separately, except the TransformControls helper owned by its control. A control's `dispose()` does not dispose its camera, scene objects, or their materials.
 
 ### OrbitControls and MapControls
 
-Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Configure `target`, distance/zoom limits, polar and azimuth limits, and `enableRotate`, `enableZoom`, or `enablePan`. Damping requires `update()` every frame while it settles. Auto-rotation also requires `update()` every frame; pass `deltaSeconds` to `update(deltaSeconds)` for refresh-rate-independent auto-rotation. With no auto-rotation, the delta argument is optional. MapControls follows the same update and lifecycle contract. In a shared `renderer.setAnimationLoop` callback, derive one frame delta and pass that same value to every time-dependent subsystem. See [OrbitControls](https://threejs.org/docs/pages/OrbitControls.html), [MapControls](https://threejs.org/docs/pages/MapControls.html), and the [revision 185 OrbitControls source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/OrbitControls.js).
+Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Configure `target`, distance/zoom limits, polar and azimuth limits, and `enableRotate`, `enableZoom`, or `enablePan`. Damping requires `update()` every frame while it settles. Auto-rotation also requires `update()` every frame; pass `deltaSeconds` to `update(deltaSeconds)` for refresh-rate-independent auto-rotation. With no auto-rotation, the delta argument is optional. MapControls follows the same update and lifecycle contract. In a shared `renderer.setAnimationLoop` callback, derive one frame delta and pass that same value to every time-dependent subsystem. See [OrbitControls](https://threejs.org/docs/pages/OrbitControls.html), [MapControls](https://threejs.org/docs/pages/MapControls.html), and the [revision 186 OrbitControls source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/OrbitControls.js).
+
+### TrackballControls
+
+Import from `three/addons/controls/TrackballControls.js` for orbiting without a fixed camera-up
+direction. Call `update()` each frame while damping settles, and `handleResize()` after canvas
+layout changes. One touch rotates; two or more touches zoom and pan. In r186,
+`multiTouchRoll = true` additionally enables a two-finger twist around the view axis
+(`rollSpeed`, default `1`); `noRotate` disables that rotation too. This is optional roll,
+not a replacement for one-finger orbiting. Use the same connect/disconnect/dispose lifecycle.
+[r186 TrackballControls](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/TrackballControls.js)
 
 ### On-demand rendering
 
@@ -187,9 +205,9 @@ Use the coalesced scheduler owned by core rendering, routed through the skill in
 
 ### FlyControls and FirstPersonControls
 
-Both require `update(deltaSeconds)` every frame. Use `THREE.Timer`, call `timer.update(timestamp)`, then read `timer.getDelta()`; `Clock` was deprecated in r183 ([r182 → r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)). FlyControls exposes `movementSpeed`, `rollSpeed`, `autoForward`, and `dragToLook`. See the [revision 185 Timer source](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js) and [FlyControls source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/FlyControls.js).
+Both require `update(deltaSeconds)` every frame. Use `THREE.Timer`, call `timer.update(timestamp)`, then read `timer.getDelta()`; `Clock` was deprecated in r183 ([r182 → r183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)). FlyControls exposes `movementSpeed`, `rollSpeed`, `autoForward`, and `dragToLook`. See the [revision 186 Timer source](https://github.com/mrdoob/three.js/blob/r186/src/core/Timer.js) and [FlyControls source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/FlyControls.js).
 
-FirstPersonControls exposes `movementSpeed`, `lookSpeed`, `lookVertical`, vertical constraints, `dampingFactor`, and `lookAt()`. In 0.185.1 it uses pointer capture: press-drag offsets continuous look; left/right mouse move forward/backward; one/two touches move forward/backward; WASD/arrows plus E/Q provide internal movement. Do not call deprecated `handleResize()`. This interaction model arrived in [r183 → r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184); see the [revision 185 source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/FirstPersonControls.js).
+FirstPersonControls exposes `movementSpeed`, `lookSpeed`, `lookVertical`, vertical constraints, `dampingFactor`, and `lookAt()`. In 0.186.1, WASD/arrows move in the world XZ plane using camera yaw only; R/F move along world Y. Combined keyboard input is normalized, so diagonals are not faster. Mouse/touch movement instead follows the full look direction: left/right mouse and one/two touches move forward/backward; while a forward/back key is held, mouse presses only look. Pointer-captured drag offsets drive continuous look. Do not call deprecated `handleResize()`. The pointer interaction model arrived in [r183 → r184](https://github.com/mrdoob/three.js/wiki/Migration-Guide#183--184); world-axis keyboard movement and R/F are r186 behavior. Use an untransformed camera parent for these world-axis assumptions. [revision 186 FirstPersonControls](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/FirstPersonControls.js)
 
 ### PointerLockControls
 
@@ -208,7 +226,7 @@ function updatePointerLock(delta) {
 }
 ```
 
-Register named `keydown`, `keyup`, `blur`, `lock`, and `unlock` handlers and remove them at teardown. See [PointerLockControls revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/PointerLockControls.js).
+Register named `keydown`, `keyup`, `blur`, `lock`, and `unlock` handlers and remove them at teardown. See [PointerLockControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/PointerLockControls.js).
 
 ### DragControls
 
@@ -217,7 +235,7 @@ import { DragControls } from "three/addons/controls/DragControls.js";
 const drag = new DragControls(objects, camera, renderer.domElement);
 ```
 
-The `objects` array is mutable. Current configuration includes `recursive` (default `true`), `transformGroup`, `raycaster`, `mouseButtons`, `touches`, and `rotateSpeed`; left/middle default to pan and right to rotate. Listen for `hoveron`, `hoveroff`, `dragstart`, `drag`, and `dragend`. Use `connect(element)`, `disconnect()`, and `dispose()`; removed legacy accessors and `activate()`/`deactivate()` are not 0.185.1 APIs. See [DragControls revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/DragControls.js) and the [r167 → r168 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#167--r168).
+The `objects` array is mutable. Current configuration includes `recursive` (default `true`), `transformGroup`, `raycaster`, `mouseButtons`, `touches`, and `rotateSpeed`; left/middle default to pan and right to rotate. Listen for `hoveron`, `hoveroff`, `dragstart`, `drag`, and `dragend`. Use `connect(element)`, `disconnect()`, and `dispose()`; removed legacy accessors and `activate()`/`deactivate()` are not 0.186.1 APIs. See [DragControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/DragControls.js) and the [r167 → r168 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#167--168).
 
 ### TransformControls
 
@@ -233,7 +251,7 @@ function onDraggingChanged(event) {
 transform.addEventListener("dragging-changed", onDraggingChanged);
 ```
 
-Use `attach()`, `detach()`, `setMode()`, `setSpace()`, snapping properties, and `setSize()`. If the helper uses a non-default layer, configure `transform.getRaycaster().layers` to match. On teardown, remove the application listener, detach, remove the helper, and call `dispose()`. Adding the controls object itself to the scene is obsolete since [r168 → r169](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169); see [TransformControls revision 185](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/controls/TransformControls.js).
+Use `attach()`, `detach()`, `setMode()`, `setSpace()`, snapping properties, and `setSize()`. If the helper uses a non-default layer, configure `transform.getRaycaster().layers` to match. On teardown, remove the application listener, detach, remove the helper, and call `transform.dispose()`: it disposes the helper's geometry and materials, so do not also call `helper.dispose()` or generic recursive disposal. Adding the controls object itself to the scene is obsolete since [r168 → r169](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169); see [TransformControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/TransformControls.js).
 ```js
 transform.removeEventListener("dragging-changed", onDraggingChanged);
 transform.detach();

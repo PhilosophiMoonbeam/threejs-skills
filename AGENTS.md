@@ -19,13 +19,13 @@
 
 ## Three.js source contract
 
-- Target exactly npm `three@0.185.1`, which reports revision `185`.
+- Target exactly npm `three@0.186.1`, which reports revision `186`.
 - Treat current online documentation and `https://threejs.org/docs/llms.txt` as conceptual when their examples target another release.
-- Use the revision-185 tag and the `three@0.185.1` package exports for exact APIs, import paths, and implementation-sensitive claims.
+- Use the revision-186 tag and fetched `three@0.186.1` package exports for exact APIs, import paths, and implementation-sensitive claims; later documentation is not r186 evidence.
 - Use only public package boundaries: `three`, `three/webgpu`, `three/tsl`, and `three/addons/...`.
 - Keep core, addons, CDN URLs, decoder assets, and copied shader chunks on one revision.
 - Cite an adjacent official source for every revision-sensitive statement. Label third-party integrations as non-core.
-- Route code from an unknown or different revision through `skills/threejs/references/0.185.1-migration.md` before adapting it.
+- Route code from an unknown or different revision through `skills/threejs/references/0.186.1-migration.md` before adapting it.
 
 ## Editing rules
 
@@ -61,7 +61,7 @@ npm run check
 git diff --check
 ```
 
-For renderer, shader, TSL, post-processing, or sizing examples, also run `npx playwright install chromium` and `npm run check:browser`. Set `REQUIRE_WEBGPU=1` when native WebGPU coverage is required. Keep maintainer checks and behavior evaluations under `checks/`, outside the installed skill. Mark executable Markdown examples with stable `<!-- check: name -->` identifiers so checks exercise the documented code directly.
+For renderer, shader, TSL, post-processing, or sizing examples, also run `npx playwright install chromium` and `npm run check:browser`. Run `REQUIRE_WEBGPU=1 npm run check:browser` when native WebGPU coverage is required; an optional adapter skip is not a native pass. Record exercised backends and unsupported capability branches. Keep maintainer checks and behavior evaluations under `checks/`, outside the installed skill. Mark executable Markdown examples with stable `<!-- check: name -->` identifiers so checks exercise the documented code directly.
 
 Also verify the affected surface:
 

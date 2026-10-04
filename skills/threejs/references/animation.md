@@ -1,4 +1,4 @@
-# Animation — Three.js 0.185.1
+# Animation — Three.js 0.186.1
 
 ## Scope
 
@@ -9,11 +9,11 @@ returns an `Object3D` root and its `AnimationClip[]`.
 
 ## Decisions and invariants
 
-- Target Three.js 0.185.1 exactly.
+- Target Three.js 0.186.1 exactly.
 - Use `THREE.Timer`, not deprecated `Clock`. `Clock` was deprecated in r183;
-  `Timer` is a core export in 0.185.1.
+  `Timer` is a core export in 0.186.1.
   [r182 → r183 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
-  [revision 185 Timer](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js)
+  [r186 Timer](https://github.com/mrdoob/three.js/blob/r186/src/core/Timer.js)
 - Connect the timer to `document` for Page Visibility handling, update it once at
   the start of each frame, then reuse that frame's delta and elapsed values.
 - Times, clip durations, mixer updates, fades, and warps use seconds.
@@ -21,7 +21,7 @@ returns an `Object3D` root and its `AnimationClip[]`.
   actions may use `clipAction()`'s optional alternative root. Use separate mixers
   for independently timed roots. An action is the mixer's cached playback
   control for one clip/root pair.
-  [revision 185 AnimationMixer](https://github.com/mrdoob/three.js/blob/r185/src/animation/AnimationMixer.js#L550-L610)
+  [r186 AnimationMixer](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationMixer.js)
 - For each track, `values.length / times.length` must equal the property's value
   size. Times must be sorted in nondecreasing order.
 - Update a mixer before applying procedural overrides to properties also driven
@@ -73,14 +73,18 @@ function disposeAnimation() {
 ```
 
 `renderer.setAnimationLoop()` is the renderer-managed loop and also supports XR.
-The official revision 185 blending example combines it with `Timer` and
+The official r186 blending example combines it with `Timer` and
 `AnimationMixer.update()`.
-[revision 185 blending example](https://github.com/mrdoob/three.js/blob/r185/examples/webgl_animation_skinning_blending.html)
+[r186 blending example](https://github.com/mrdoob/three.js/blob/r186/examples/webgl_animation_skinning_blending.html)
+This helper stops playback and releases mixer/timer bindings, not the root's resources
+or renderer. The shown loop uses `WebGLRenderer`; for common `Renderer`/`WebGPURenderer`,
+await `renderer.setAnimationLoop(null)` before subsystem teardown and await
+`renderer.dispose()` at final application retirement. [r186 common loop/disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js)
 
 ## Tracks, bindings, and clips
 
 Use one value per key for scalar, boolean, and string tracks; three for vectors
-and colors; four for quaternions. Quaternion samples must be normalized. [revision 185 QuaternionKeyframeTrack](https://github.com/mrdoob/three.js/blob/r185/src/animation/tracks/QuaternionKeyframeTrack.js)
+and colors; four for quaternions. Quaternion samples must be normalized. [r186 QuaternionKeyframeTrack](https://github.com/mrdoob/three.js/blob/r186/src/animation/tracks/QuaternionKeyframeTrack.js)
 
 ```js
 const opacity = new THREE.NumberKeyframeTrack('.material.opacity', [0, 1], [1, 0]);
@@ -93,19 +97,67 @@ const smile = new THREE.NumberKeyframeTrack('.morphTargetInfluences[smile]', [0,
 
 Morph influences are numbers; never use `StringKeyframeTrack` for them. A named
 morph binding resolves through `morphTargetDictionary`.
-[revision 185 PropertyBinding](https://github.com/mrdoob/three.js/blob/r185/src/animation/PropertyBinding.js)
-[revision 185 Mesh morph fields](https://github.com/mrdoob/three.js/blob/r185/src/objects/Mesh.js)
+[r186 PropertyBinding](https://github.com/mrdoob/three.js/blob/r186/src/animation/PropertyBinding.js)
+[r186 Mesh morph fields](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js)
 
-Use `InterpolateLinear`, `InterpolateSmooth`, or `InterpolateDiscrete` only when
-supported by the track type. Boolean and string tracks are discrete. Quaternion
-tracks use quaternion interpolation. Do not describe `InterpolateSmooth` as glTF
-`CUBICSPLINE`; loader-created spline tracks use specialized interpolants. [revision 185 KeyframeTrack](https://github.com/mrdoob/three.js/blob/r185/src/animation/KeyframeTrack.js)
+Use `InterpolateLinear`, `InterpolateSmooth`, `InterpolateDiscrete`, or
+`InterpolateBezier` only when appropriate for the track. Boolean and string tracks
+are discrete; keep quaternion tracks on quaternion interpolation, not componentwise
+Bézier curves. `InterpolateSmooth` is not glTF `CUBICSPLINE`; loader-created spline
+tracks use specialized interpolants. [r186 KeyframeTrack](https://github.com/mrdoob/three.js/blob/r186/src/animation/KeyframeTrack.js)
 
 Pass `-1` as clip duration to infer it from the final track keys. Calling
 `clip.resetDuration()` recalculates duration; it does not seek. Seek one action
 with `action.reset()` or `action.time = 0`, and seek the whole mixer with
 `mixer.setTime(0)`.
-[revision 185 AnimationClip](https://github.com/mrdoob/three.js/blob/r185/src/animation/AnimationClip.js)
+[r186 AnimationClip](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationClip.js)
+
+### Authored Bézier tangents
+
+r186 `InterpolateBezier` uses explicit 2D control points, not derivative slopes.
+For `N` keys and property size `S`, each `settings.inTangents`/`outTangents`
+`Float32Array` has `N * S * 2` entries: one `[time, value]` pair per key and
+component. The previous key's outgoing point and next key's incoming point define
+each segment. Set these arrays before `mixer.clipAction()` or `createInterpolant()`;
+without both arrays the Bézier interpolant falls back to linear interpolation.
+[r186 tangent factory](https://github.com/mrdoob/three.js/blob/r186/src/animation/KeyframeTrack.js#L154-L177),
+[r186 control-point layout and evaluation](https://github.com/mrdoob/three.js/blob/r186/src/math/interpolants/BezierInterpolant.js#L3-L75),
+[r186 action interpolant creation](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationAction.js#L33-L44)
+
+This scalar track eases opacity from 0 to 1. Use it on a transparent material;
+construct the clip and action only after its tangent settings are assigned:
+
+<!-- check: animation-bezier -->
+```js
+import * as THREE from 'three';
+
+function createBezierTrack() {
+  const track = new THREE.NumberKeyframeTrack(
+    '.material.opacity', [0, 1], [0, 1], THREE.InterpolateBezier,
+  );
+  track.settings = {
+    inTangents: new Float32Array([0, 0, 2 / 3, 1]),
+    outTangents: new Float32Array([1 / 3, 0, 1, 1]),
+  };
+  return track;
+}
+```
+
+### FBX clips on one timeline
+
+For an FBX file whose animation stacks define separate ranges on a shared
+timeline, set `loader.trimAnimationClips = true` on an `FBXLoader` instance before
+loading. The default is `false`. When a stack has `LocalStop > LocalStart`, r186
+keeps keys inside that range and shifts them to start at time zero; tracks with
+no keys in the range are discarded. It does not synthesize boundary keys, so
+check first/last poses and bindings against the authored ranges. Select the
+returned root's `animations` by clip name rather than assuming index zero is the
+wanted clip. Multiple stacks are clips; multiple layers within one stack remain
+unsupported and subsequent layers are ignored. Loading, cancellation, and root
+resource ownership remain asset-loading concerns.
+[r186 option/default](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/FBXLoader.js#L89-L97),
+[r186 stacks and clip ranges](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/FBXLoader.js#L2911-L2967),
+[r186 key trimming](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/FBXLoader.js#L2971-L3016)
 
 ## Actions, loops, and events
 
@@ -130,7 +182,7 @@ weights combine when actions target the same binding.
 Listen for mixer `loop` and `finished` events when application state depends on
 playback completion. Keep each listener function so teardown can call
 `mixer.removeEventListener(type, listener)`.
-[revision 185 AnimationAction](https://github.com/mrdoob/three.js/blob/r185/src/animation/AnimationAction.js)
+[r186 AnimationAction](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationAction.js)
 
 ## Safe fades and additive layers
 
@@ -146,7 +198,7 @@ function crossFade(from, to, seconds) {
 Passing `true` as the final argument temporarily warps both time scales to align
 clips of different durations. Enable it only when that synchronization is
 wanted. A plain `to.play()` is unsafe if the target previously finished, faded,
-or was disabled. [revision 185 blending example](https://github.com/mrdoob/three.js/blob/r185/examples/webgl_animation_skinning_blending.html)
+or was disabled. [r186 blending example](https://github.com/mrdoob/three.js/blob/r186/examples/webgl_animation_skinning_blending.html)
 
 Convert a cloned clip before creating its action because conversion mutates the
 clip and establishes additive blend mode:
@@ -162,7 +214,7 @@ additiveAction.setEffectiveWeight(0.35).play();
 Choose the reference frame, reference clip, and frames-per-second to match the
 source data. The utility omits boolean and string tracks. Do not convert a clip
 already used by normal actions.
-[revision 185 AnimationUtils](https://github.com/mrdoob/three.js/blob/r185/src/animation/AnimationUtils.js)
+[r186 AnimationUtils](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationUtils.js)
 
 ## Skeletons and procedural bones
 
@@ -177,8 +229,8 @@ procedural bone override after `mixer.update(delta)` and before rendering. If th
 motion must blend instead of replace a channel, author a compatible additive
 clip. Attachments may be parented to a cached bone; set their local transform for
 that bone's space.
-[revision 185 AnimationMixer update](https://github.com/mrdoob/three.js/blob/r185/src/animation/AnimationMixer.js)
-[revision 185 SkinnedMesh](https://github.com/mrdoob/three.js/blob/r185/src/objects/SkinnedMesh.js)
+[r186 AnimationMixer update](https://github.com/mrdoob/three.js/blob/r186/src/animation/AnimationMixer.js)
+[r186 SkinnedMesh](https://github.com/mrdoob/three.js/blob/r186/src/objects/SkinnedMesh.js)
 
 ## Morph targets
 
@@ -207,7 +259,9 @@ additive animation for intentional layering.
 - Remove mixer event listeners and dispose the timer during teardown.
 - `frustumCulled` controls rendering, not animation evaluation. Render callbacks
   cannot detect an object becoming culled because callbacks run only for rendered
-  objects. [revision 185 WebGLRenderer](https://github.com/mrdoob/three.js/blob/r185/src/renderers/WebGLRenderer.js)
+  objects. `Object3D.intersectsFrustum()` is an override hook, not a visibility query
+  for a whole animated root or its descendants. [r186 Object3D hook](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js#L1063-L1072),
+  [r186 WebGL render culling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js#L1892-L1914)
 - Apply distance/visibility policy in the application update loop or in a
   deliberate lower-frequency culling pass. Pause an action only when freezing
   its local time is correct; otherwise keep simulation advancing and skip only
@@ -217,7 +271,7 @@ additive animation for intentional layering.
 
 ## Official sources
 
-- [revision 185 Timer and animation system](https://github.com/mrdoob/three.js/blob/r185/src/core/Timer.js)
-- [revision 185 tracks, mixers, and actions](https://github.com/mrdoob/three.js/tree/r185/src/animation)
-- [revision 185 animation manual](https://github.com/mrdoob/three.js/blob/r185/manual/en/animation-system.html)
+- [r186 Timer and animation system](https://github.com/mrdoob/three.js/blob/r186/src/core/Timer.js)
+- [r186 tracks, mixers, and actions](https://github.com/mrdoob/three.js/tree/r186/src/animation)
+- [r186 animation manual](https://github.com/mrdoob/three.js/blob/r186/manual/pages/animation-system.html)
 - [Migration guide: 182→183](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)

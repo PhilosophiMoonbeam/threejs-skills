@@ -1,4 +1,4 @@
-# Geometry — Three.js 0.185.1
+# Geometry — Three.js 0.186.1
 
 ## Scope
 Use this reference for built-in geometry generators, custom `BufferGeometry`, lines,
@@ -7,7 +7,7 @@ textures, shaders/TSL, animation, interaction, and render-loop policy have separ
 owners.
 
 Core classes import from `three`. Example addons import through `three/addons/...`.
-All APIs and behavior below target Three.js 0.185.1 exactly.
+All APIs and behavior below target Three.js 0.186.1 exactly.
 ## Decisions and invariants
 - A `BufferGeometry` is attribute streams plus an optional index. Ordinary vertex
   attributes (`position`, normals, UVs, and colors) must describe the same vertex
@@ -23,8 +23,8 @@ All APIs and behavior below target Three.js 0.185.1 exactly.
 - Use `Uint32Array` when a vertex index reaches `65535`; WebGL 2 reserves the
   maximum 16-bit value for primitive restart. `setIndex()` selects the correct
   width for a regular JavaScript array. A manually supplied typed attribute must
-  already use the correct width. [r185 index selection](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L311-L325),
-  [r185 primitive-restart threshold](https://github.com/mrdoob/three.js/blob/r185/src/utils.js#L61-L71)
+  already use the correct width. [r186 index selection](https://github.com/mrdoob/three.js/blob/r186/src/core/BufferGeometry.js),
+  [r186 primitive-restart threshold](https://github.com/mrdoob/three.js/blob/r186/src/utils.js)
 
 ## Built-in generators
 Common full positional signatures, where positional detail is useful:
@@ -42,7 +42,7 @@ TorusKnotGeometry(radius, tube, tubularSegments, radialSegments, p, q)
 ```
 `CapsuleGeometry.height` is the straight middle height; `heightSegments` defaults to
 1. r176 rewrote its segmentation and UV distribution, so pre-r176 vertex/UV output
-is not stable against Three.js 0.185.1. [revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/geometries/CapsuleGeometry.js)
+is not stable against Three.js 0.186.1. [revision 186 source](https://github.com/mrdoob/three.js/blob/r186/src/geometries/CapsuleGeometry.js)
 | [r176 change](https://github.com/mrdoob/three.js/releases/tag/r176)
 
 Also use `DodecahedronGeometry`, `IcosahedronGeometry`, `OctahedronGeometry`, or
@@ -56,7 +56,7 @@ import { FontLoader } from "three/addons/loaders/FontLoader.js";
 import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
 
 const font = await new FontLoader().loadAsync("/fonts/helvetiker_regular.typeface.json");
-const text = new TextGeometry("0.185.1", {
+const text = new TextGeometry("0.186.1", {
   font,
   size: 0.5,
   depth: 0.12,
@@ -65,10 +65,10 @@ const text = new TextGeometry("0.185.1", {
 });
 text.center();
 ```
-The application must host that JSON URL. Three.js 0.185.1 no longer publishes `examples/fonts`
+The application must host that JSON URL. Three.js 0.186.1 does not publish `examples/fonts`
 in the npm package. Use `depth`, not the pre-r163 option name `height`.
 [Font asset removal](https://github.com/mrdoob/three.js/pull/33744) |
-[TextGeometry revision 185 source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/geometries/TextGeometry.js)
+[TextGeometry revision 186 source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/geometries/TextGeometry.js)
 
 ## Custom BufferGeometry
 This complete pattern creates a lit, indexed quad with two material groups:
@@ -109,7 +109,7 @@ geometry.setAttribute("color", new THREE.BufferAttribute(bytes, 3, true));
 ```
 With `normalized: true`, attribute getters/setters expose normalized values while
 `.array` remains raw integer storage. Enable `material.vertexColors` when consuming
-`color`. [BufferAttribute revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferAttribute.js)
+`color`. [BufferAttribute revision 186 source](https://github.com/mrdoob/three.js/blob/r186/src/core/BufferAttribute.js)
 
 ## Mutation, update ranges, and bounds
 
@@ -135,12 +135,12 @@ and clear uploaded ranges. For interleaved attributes, usage, ranges, and
 be changed after first render; dispose the geometry and create a replacement.
 [BufferGeometry update manual](https://threejs.org/manual/en/how-to-update-things.html) |
 [BufferAttribute update-range API](https://threejs.org/docs/pages/BufferAttribute.html) |
-[revision 185 BufferGeometry source](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js)
+[revision 186 BufferGeometry source](https://github.com/mrdoob/three.js/blob/r186/src/core/BufferGeometry.js)
 
 `applyMatrix4`, `rotateX/Y/Z`, `translate`, `scale`, and `center` mutate vertex
 data; they mark affected attributes and refresh bounds that already exist. Use
 `Object3D` transforms for ordinary runtime motion; these are one-time CPU edits.
-[BufferGeometry#applyMatrix4, revision 185](https://github.com/mrdoob/three.js/blob/r185/src/core/BufferGeometry.js#L376-L424)
+[BufferGeometry#applyMatrix4, revision 186](https://github.com/mrdoob/three.js/blob/r186/src/core/BufferGeometry.js)
 
 ## Lines, points, and derived geometry
 ```js
@@ -182,7 +182,7 @@ After runtime transform changes, mark `instanceMatrix`, then recompute the spher
 before culling or raycasting; recompute the box when application code uses it.
 After runtime color changes, mark `instanceColor.needsUpdate`. `Raycaster`
 intersections report `instanceId`. Instance matrices must not encode a negative
-scale. [InstancedMesh revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/objects/InstancedMesh.js)
+scale. [InstancedMesh revision 186 source](https://github.com/mrdoob/three.js/blob/r186/src/objects/InstancedMesh.js)
 
 For custom per-instance attributes, use `InstancedBufferGeometry` and a material
 that consumes them. Set `instanceCount` explicitly:
@@ -202,7 +202,7 @@ const dots = new THREE.Mesh(instanced, new THREE.ShaderMaterial({
 dots.frustumCulled = false; // Shader offsets are absent from CPU bounds.
 scene.add(dots);
 ```
-[InstancedBufferGeometry revision 185 source](https://github.com/mrdoob/three.js/blob/r185/src/core/InstancedBufferGeometry.js)
+[InstancedBufferGeometry revision 186 source](https://github.com/mrdoob/three.js/blob/r186/src/core/InstancedBufferGeometry.js)
 
 ## Utilities and tangents
 ```js
@@ -216,7 +216,98 @@ compatible attributes/morph attributes. `true` creates one group per input.
 For authored tangent-space normal maps, prefer
 `computeMikkTSpaceTangents(geometry, MikkTSpace)` after `await MikkTSpace.ready`,
 importing `MikkTSpace` from `three/addons/libs/mikktspace.module.js`.
-[Utility revision 185 source](https://github.com/mrdoob/three.js/blob/r185/examples/jsm/utils/BufferGeometryUtils.js)
+[Utility revision 186 source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/utils/BufferGeometryUtils.js)
+
+### Triangulation and simplification
+
+`toTrianglesDrawMode(geometry, drawMode)` converts `TriangleFanDrawMode` or
+`TriangleStripDrawMode` **in place**, returns the same geometry, rewrites its index
+(creating one if needed), and clears groups. It does not copy attributes. Clone
+first when preserving the input; rebuild material groups for the resulting triangle
+index. `TrianglesDrawMode` already represents triangles and returns the input with
+a warning. [r186 conversion](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/utils/BufferGeometryUtils.js)
+
+`await new SimplifyModifier().modify(geometry, count)` returns a **new indexed**
+`BufferGeometry`; `count` is the approximate number of vertices to remove, not
+the target count or a ratio. The modifier awaits its bundled meshoptimizer
+`MeshoptSimplifier`, welds non-indexed input, and compacts the result's vertex
+attributes to referenced vertices without mutating the supplied geometry.
+Normals and UVs affect the simplification error metric. Non-interleaved ordinary
+attributes retain their typed-array class and normalization; groups, morph attributes, draw ranges,
+and bounds are not copied. Use this for static triangle geometry, not a drop-in
+replacement for skinned/morph or multi-material geometry. Recompute result bounds,
+restore any applicable groups, and dispose the old geometry only after its last
+consumer. Meshoptimizer is a bundled third-party library, not a core API; no
+separate CDN script is required.
+[r186 modifier](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/modifiers/SimplifyModifier.js)
+
+The caller owns all three returned geometries and must dispose each after use:
+
+<!-- check: geometry-r186 -->
+```js
+import * as THREE from "three";
+import { toTrianglesDrawMode } from "three/addons/utils/BufferGeometryUtils.js";
+import { SimplifyModifier } from "three/addons/modifiers/SimplifyModifier.js";
+
+async function createGeometryR186() {
+  const source = new THREE.BufferGeometry();
+  source.setAttribute("position", new THREE.Float32BufferAttribute([
+    -1, -1, 0,  1, -1, 0,  -1, 1, 0,  1, 1, 0,
+  ], 3));
+  source.addGroup(0, 4, 0);
+  const triangles = toTrianglesDrawMode(source.clone(), THREE.TriangleStripDrawMode);
+  const simplified = await new SimplifyModifier().modify(triangles, 1);
+  simplified.computeBoundingBox();
+  simplified.computeBoundingSphere();
+  return { source, triangles, simplified };
+}
+```
+
+## Gaussian splat representation
+
+Use the official addon `GaussianSplat` from
+`three/addons/objects/GaussianSplat.js`.
+It requires `WebGPURenderer` and node materials; that renderer's `forceWebGL`
+fallback is supported, ordinary `WebGLRenderer` is not. Resolve both `three/webgpu`
+and `three/tsl`. [r186 object](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/objects/GaussianSplat.js)
+
+There is no exported `GaussianSplatGeometry` class in 0.186.1. Loader output is
+`BufferGeometry`; for authored arrays, use the exported factory:
+
+```js
+import { createGaussianSplatGeometry } from "three/addons/utils/GaussianSplatUtils.js";
+import { GaussianSplat } from "three/addons/objects/GaussianSplat.js";
+
+const data = createGaussianSplatGeometry(
+  new Float32Array([0, 0, 0]),                         // centers: 3 values/splat
+  new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),     // covariance: xx,xy,xz,yy,yz,zz
+  new Uint8ClampedArray([255, 128, 64, 255]),          // linear RGBA: 4 bytes/splat
+);
+const splats = new GaussianSplat(data, { autoSort: true });
+```
+
+The factory wraps the supplied arrays without copying. Its optional fourth
+argument supplies contiguous bands `{ sh1, sh2, sh3 }` through degree 3, using
+packed `Uint32Array` words: 3/4/6 words per splat respectively, four clamped-byte
+coefficients per word decoded as `(byte - 128) / 128`. Attribute names are
+`position`, `covariance`, normalized `color`, and `sphericalHarmonics1/2/3`.
+Do not feed ordinary PLY point geometry or floating SH arrays to `GaussianSplat`.
+[r186 representation and factory](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/utils/GaussianSplatUtils.js)
+
+`splats.splatGeometry` is the source data; `splats.geometry` is a separate internal
+instanced quad. Treat source data as immutable once the object is constructed:
+GPU storage is prepared from it, so ordinary attribute `needsUpdate` is not a
+complete splat-update contract. Recreate the object for changed splat data.
+Source geometry bounds cover centers only; `splats.computeBoundingBox()` and
+`splats.computeBoundingSphere()` include covariance extents. Use these object
+bounds for culling and helpers. Picking tests covariance ellipsoids, skips opacity
+below 0.2, and reports the source splat `index`, with no triangle face or barycentric
+coordinates; it is not exact rendered-pixel selection. Raycasting scans splats,
+so bound query frequency for large assets. Automatic depth sorting is approximate
+4096-bin counting sort; the official bundled `CountingSort` uses GPU compute or
+CPU sorting for the WebGL fallback, not an external sort worker.
+[r186 bounds, picking, and sorting](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/objects/GaussianSplat.js) ·
+[r186 CountingSort](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/gpgpu/CountingSort.js)
 
 ## Lifecycle and performance
 - Reuse indexed vertices, merge compatible static geometry, or instance repeated
@@ -227,8 +318,18 @@ importing `MikkTSpace` from `three/addons/libs/mikktspace.module.js`.
   Dispose textures according to their owner.
 - Call `InstancedMesh.dispose()` for resources owned by that instance object; it does
   not recursively dispose its shared geometry or material.
+- For `GaussianSplat`, separately dispose the object, its internal geometry/material,
+  and the source `splatGeometry` after their final users. In r186, internal sort and
+  SH compute resources have no public per-splat teardown API. With a renderer-created
+  native `GPUDevice`, bound their GPU lifetime to the owning renderer and await its
+  final disposal. A supplied device remains caller-owned; renderer disposal alone
+  cannot guarantee private compute retirement, so its owner must retire the device
+  after its final users.
+  [r186 Object3D disposal](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js) ·
+  [r186 renderer disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js) ·
+  [r186 native backend device ownership](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPUBackend.js#L3271-L3275)
 
 Official references: [BufferGeometry](https://threejs.org/docs/pages/BufferGeometry.html),
 [geometry constants and constructors](https://threejs.org/docs/index.html#api/en/geometries/BoxGeometry),
 [cleanup manual](https://threejs.org/manual/#en/cleanup), and
-[r185 release notes](https://github.com/mrdoob/three.js/releases/tag/r185).
+[r186 release notes](https://github.com/mrdoob/three.js/releases/tag/r186).
