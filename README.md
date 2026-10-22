@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="assets/threejs-skills-for-agents.svg"><img src="assets/threejs-skills-for-agents.png" alt="Three.js Skills for Agents"></a>
+  <img src="assets/threejs-skills-for-agents.svg" alt="Three.js Skills for Agents" width="800">
 </p>
 
 # Three.js Skills for Agents
