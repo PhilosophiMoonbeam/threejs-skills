@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { transformSync } from 'esbuild';
 import * as THREE from 'three';
 import { toTrianglesDrawMode } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
@@ -26,15 +27,21 @@ test('one entry point reaches every reference exactly once, with no reference ch
   }
 });
 
-test('JavaScript examples parse and explicit imports exist in the pinned package', async () => {
+test('JavaScript and JSX examples parse and Three.js imports exist in the pinned package', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.resolve('three')), 'utf8'));
   assert.equal(pkg.version, '0.186.1');
   assert.equal(THREE.REVISION, '186');
   let snippets = 0;
+  let jsxSnippets = 0;
   const modules = new Map();
   for (const file of files) {
     const source = await readFile(file, 'utf8');
     for (const { language, code } of codeBlocks(source)) {
+      if (language === 'jsx') {
+        transformSync(code, { loader: 'jsx', jsx: 'automatic', sourcefile: file.pathname });
+        jsxSnippets++;
+        continue;
+      }
       if (!['js', 'javascript'].includes(language)) continue;
       snippets++;
       const result = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: code, encoding: 'utf8' });
@@ -51,7 +58,7 @@ test('JavaScript examples parse and explicit imports exist in the pinned package
       }
     }
   }
-  console.log(`Parsed ${snippets} JavaScript examples; checked ${modules.size} module imports.`);
+  console.log(`Parsed ${snippets} JavaScript and ${jsxSnippets} JSX examples; checked ${modules.size} Three.js module imports.`);
 });
 
 test('vertex index 65535 requires 32-bit storage for the WebGL primitive-restart boundary', () => {

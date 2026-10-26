@@ -8,6 +8,7 @@
     "render:artwork": "node checks/render-artwork.mjs"
   },
   "devDependencies": {
+    "esbuild": "0.25.12",
     "playwright": "1.62.1",
     "three": "0.186.1"
   },

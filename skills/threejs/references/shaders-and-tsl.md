@@ -83,6 +83,166 @@ function createPulseMaterial() {
 
 `colorNode` supplies linear surface color; leave display conversion to the renderer or final pipeline. TSL operations construct a shader graph; JavaScript arithmetic on node objects does not become shader arithmetic. Inside `Fn`, use node assignment methods and TSL control flow such as `If` for GPU-dependent branches. [r186 UniformNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/UniformNode.js), [r186 NodeMaterial](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js), [r186 TSL flow](https://github.com/mrdoob/three.js/blob/r186/src/nodes/tsl/TSLCore.js)
 
+### Compose node slots, functions, and varyings
+
+`colorNode` replaces base color/map, `opacityNode` replaces opacity, `emissiveNode`
+supplies linear emissive radiance, and `normalNode` supplies a **view-space** normal.
+`positionNode` supplies local vertex position; `fragmentNode` replaces the normal
+material fragment result, so it is not a shortcut for retaining PBR lighting.
+Choose `MeshStandardNodeMaterial`/`MeshPhysicalNodeMaterial` for lit effects and
+provide lights or an environment. `MeshBasicNodeMaterial` needs neither.
+[r186 node slots](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js)
+
+This reusable `Fn` takes a shader value, not a JavaScript number. `varying` evaluates
+its input in the vertex stage and interpolates it; use fragment-stage noise instead
+when interpolation would lose detail. `time` advances with the renderer's node
+frame, while an explicit `uniform` remains useful for a scrubbed or paused timeline.
+
+<!-- check: tsl-composition -->
+```js
+import { MeshBasicNodeMaterial } from 'three/webgpu';
+import {
+  Fn, color, mix, positionWorld, varying, time, uv,
+  mx_fractal_noise_float, uniform, vec3,
+} from 'three/tsl';
+
+function createHeightNoiseMaterial() {
+  const amplitude = uniform(0.2);
+  const heightBands = Fn(([height]) =>
+    mix(color(0x003344), color(0x88eeff), height.mul(3).sin().mul(0.5).add(0.5)));
+  const worldY = varying(positionWorld.y, 'heightNoiseWorldY');
+  const noise = mx_fractal_noise_float(vec3(uv().mul(10), time.mul(0.2))).abs();
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = heightBands(worldY).mul(noise.mul(amplitude).add(1));
+  return {
+    material,
+    amplitude,
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+Attach to geometry with UVs; the caller owns geometry, scene membership, and loop.
+Build once and mutate `amplitude.value`. For GPU-dependent mutation inside `Fn`,
+use `.toVar()`, `.assign()`/`.addAssign()` and `If`, not JS `if` on a node object.
+`glslFn` and `wgslFn` embed backend-specific source; neither is portable across
+WebGPU and WebGL. Prefer TSL `Fn` for shared code.
+[r186 Fn/flow](https://github.com/mrdoob/three.js/blob/r186/src/nodes/tsl/TSLCore.js),
+[r186 varying](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/VaryingNode.js),
+[r186 time](https://github.com/mrdoob/three.js/blob/r186/src/nodes/utils/Timer.js),
+[r186 noise exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.TSL.js)
+
+### Dissolve with a scalar texture
+
+Supply a ready noise texture with `NoColorSpace` and mesh UVs. Both factories below
+own only their material; the caller owns the texture, geometry, scene membership,
+and animation. Animate `progress` through the noise's value range. Discarded
+fragments do not blend; do not enable transparency just to make holes.
+
+<!-- check: glsl-dissolve -->
+```js
+import * as THREE from 'three';
+
+function createGLSLDissolveMaterial(noiseMap) {
+  const material = new THREE.ShaderMaterial({
+    uniforms: { noiseMap: { value: noiseMap }, progress: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D noiseMap;
+      uniform float progress;
+      varying vec2 vUv;
+      void main() {
+        float n = texture2D(noiseMap, vUv).r;
+        if (n < progress) discard;
+        float edge = smoothstep(progress, progress + 0.1, n);
+        gl_FragColor = vec4(mix(vec3(1.0, 0.5, 0.0), vec3(0.5), edge), 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  return {
+    material,
+    update(progress) { material.uniforms.progress.value = progress; },
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+The GLSL output chunks are for direct canvas rendering; intermediate targets must
+follow the single-output-transform rule below.
+
+<!-- check: tsl-dissolve -->
+```js
+import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { Fn, color, mix, smoothstep, texture, uniform, uv } from 'three/tsl';
+
+function createTSLDissolveMaterial(noiseMap) {
+  const progress = uniform(0);
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = Fn(() => {
+    const n = texture(noiseMap, uv()).r;
+    n.lessThan(progress).discard();
+    return mix(color(1, 0.5, 0), color(0.5, 0.5, 0.5),
+      smoothstep(progress, progress.add(0.1), n));
+  })();
+  return {
+    material,
+    update(value) { progress.value = value; },
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+`texture(map, uvNode)` samples explicitly; `texture(map)` uses its default UV path.
+Use `.sample(uvNode)` to resample an existing texture node, not the removed `.uv()`
+method. For lit dissolve shadows, ensure the depth/shadow material uses the same
+discard condition; a visible-color-only GLSL discard does not change an independent
+shadow material.
+[r186 TextureNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/TextureNode.js),
+[r186 discard](https://github.com/mrdoob/three.js/blob/r186/src/nodes/utils/Discard.js),
+[r186 WebGL shadow materials](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLShadowMap.js)
+
+### Vertex displacement without stale lighting normals
+
+This factory targets a **plain, non-skinned, non-instanced XY plane** with enough
+subdivisions to represent the wave. Flat shading reconstructs view-space face
+normals from displaced positions; it is faceted, not an analytic smooth normal.
+The caller supplies lights/environment, owns geometry and loop, and must expand
+CPU bounds by the maximum displacement (or deliberately disable frustum culling).
+
+<!-- check: tsl-displacement -->
+```js
+import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { positionGeometry, vec3, time, uniform } from 'three/tsl';
+
+function createWaveNodeMaterial() {
+  const amplitude = uniform(0.2);
+  const material = new MeshStandardNodeMaterial({ color: 0x66bbff, flatShading: true });
+  const wave = positionGeometry.x.mul(5).add(time).sin().mul(amplitude);
+  material.positionNode = positionGeometry.add(vec3(0, 0, wave));
+  return {
+    material,
+    amplitude,
+    dispose() { material.dispose(); },
+  };
+}
+```
+
+The GLSL equivalent for an unlit `ShaderMaterial` is
+`vec3 p = position; p.z += sin(p.x * 5.0 + uTime) * amplitude;`
+followed by `projectionMatrix * modelViewMatrix * vec4(p, 1.0)`.
+For smooth lit deformation, reconstruct the displaced normal analytically or from
+neighbor samples. Do not patch only `begin_vertex` on a lit material. The separate
+`positionNode` sub-build caveat in the compute-boundary section still applies to
+morphing, skinning, batching, and instancing; this recipe does not preserve them.
+[r186 position setup](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js),
+[r186 derivative normals](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/Normal.js)
+
 ## Minimal direct-screen ShaderMaterial
 
 This explicit GLSL3 form uses a time uniform, keeps calculations linear, and applies display transforms once:
@@ -166,6 +326,56 @@ Declare `modelMatrix`, `modelViewMatrix`, `projectionMatrix`, or `normalMatrix` 
 - Normalize interpolated directions and normals in the fragment stage; vertex normalization does not survive interpolation.
 - Local/object space uses geometry attributes. `modelMatrix` reaches world space; `modelViewMatrix` reaches view space; `projectionMatrix` reaches clip space. Divide clip `xyz` by `w` for NDC.
 - Transform normals with `normalMatrix`, not `mat3(modelMatrix)`, especially under non-uniform scale.
+- Do not use built-in attribute/matrix names for custom uniforms. Non-raw materials already declare them; raw shaders declare their inputs but still receive recognized renderer matrix uploads.
+- `ShaderMaterial` does not apply `instanceMatrix` or consume `instanceColor` automatically. Apply per-instance transforms and color explicitly.
+
+### Custom instanced attributes
+
+For per-vertex data use `BufferAttribute`; for per-instance data use
+`InstancedBufferAttribute` and provide at least one item per drawn instance.
+This WebGL factory owns its geometry and material, not scene membership. Its
+shader-only offset is deliberately in instance-local space, before `instanceMatrix`.
+
+<!-- check: glsl-instanced-attribute -->
+```js
+import * as THREE from 'three';
+
+function createOffsetInstances(count = 16) {
+  const geometry = new THREE.PlaneGeometry(0.15, 0.15);
+  const offsets = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) offsets[i * 3] = (i - (count - 1) / 2) * 0.2;
+  geometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(offsets, 3));
+  const material = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute vec3 aOffset;
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix
+          * vec4(position + aOffset, 1.0);
+      }`,
+    fragmentShader: `
+      void main() {
+        gl_FragColor = vec4(1.0, 0.2, 0.1, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  const mesh = new THREE.InstancedMesh(geometry, material, count);
+  mesh.frustumCulled = false; // CPU instance bounds do not include aOffset.
+  return {
+    mesh,
+    dispose() { geometry.dispose(); material.dispose(); mesh.dispose(); },
+  };
+}
+```
+
+Alternatively compute conservative custom bounds. Raycasting also uses CPU geometry,
+not arbitrary shader offsets. `position`, `normal`, and `uv` are injected;
+`instanceMatrix`/`instanceColor` and vertex colors depend on renderer defines.
+Declare custom inputs explicitly. Additional UV channels and tangents are injected
+only when their corresponding `USE_UV*`/`USE_TANGENT` defines are enabled; do not
+blindly redeclare an enabled input.
+[r186 injected attributes](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLProgram.js),
+[r186 instance bounds/raycast](https://github.com/mrdoob/three.js/blob/r186/src/objects/InstancedMesh.js)
 
 A view-space Fresnel term keeps its normal and view direction in one space:
 
@@ -197,6 +407,28 @@ material.uniforms.uMapTransform.value = colorTexture.matrix;
 ```
 
 Apply transforms explicitly in the vertex shader: `vUv = (uMapTransform * vec3(uv, 1.0)).xy;`. Copying `vUv = uv` ignores `Texture.offset`, `repeat`, `rotation`, and `center`. Sample with `texture(uMap, vUv)` in explicit GLSL3. Decode color textures according to `Texture.colorSpace`, keep data textures untagged, calculate lighting in linear space, then perform the single final output conversion. See [Texture.colorSpace and matrix](https://threejs.org/docs/pages/Texture.html#colorSpace).
+
+For an sRGB `VideoTexture` sampled by a custom WebGL shader, explicitly decode the
+sample with `sRGBTransferEOTF(texture(videoMap, vUv))` before linear operations.
+The non-raw shader prefix supplies this helper; built-in map shaders do their own
+video decode, so do not add it there. Raw shaders must supply the helper themselves.
+[r186 video texture upload](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js),
+[r186 map video decode](https://github.com/mrdoob/three.js/blob/r186/src/renderers/shaders/ShaderChunk/map_fragment.glsl.js),
+[r186 shader prefix](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLProgram.js)
+
+For conventional perspective depth, `#include <packing>` provides
+`perspectiveDepthToViewZ(texture(depthMap, vUv).r, cameraNear, cameraFar)`.
+The result is signed view Z; `-viewZ` is positive forward distance. Use
+`orthographicDepthToViewZ` for orthographic depth and account separately for
+logarithmic/reversed-depth conventions; depth is scalar data, not sRGB color.
+[r186 packing functions](https://github.com/mrdoob/three.js/blob/r186/src/renderers/shaders/ShaderChunk/packing.glsl.js)
+
+`MultiplyBlending` and `SubtractiveBlending` require `premultipliedAlpha = true`
+on the WebGL path. A custom shader must also premultiply its RGB by its alpha
+(or include `premultiplied_alpha_fragment` after output conversion); the material
+flag alone does not rewrite arbitrary output.
+[r186 blend requirements](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLState.js),
+[r186 premultiply chunk](https://github.com/mrdoob/three.js/blob/r186/src/renderers/shaders/ShaderChunk/premultiplied_alpha_fragment.glsl.js)
 
 ## Safe `onBeforeCompile` patches
 
@@ -283,9 +515,18 @@ For depth-intersection fading, import `softParticles` from `three/addons/tsl/uti
 
 Do not import the removed TSL `append` export or the removed `PMREMUtils` namespace. Use `.toStack()` when explicitly adding a node statement to the active `Fn` stack; assignment and control-flow helpers already add their statements. Do not replace internal PMREM utilities with deep imports: use the public renderer-compatible `PMREMGenerator` for environment preprocessing. [r186 stack helper](https://github.com/mrdoob/three.js/blob/r186/src/nodes/tsl/TSLCore.js), [r186 TSL exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.TSL.js), [r186 WebGPU exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.WebGPU.js)
 
+Other porting names in r186 are `uniformArray` (not `uniforms`), `TWO_PI` (not
+`PI2`), `varying(node, name)` or `node.toVarying(name)` (not a `toVarying` export),
+`setName` (not deprecated `label`), `blendScreen` (not `screen`), and `viewportUV`
+(not `viewportTopLeft`). Use `fog(colorNode, rangeFogFactor(near, far))`, not the
+removed `rangeFog`. These are graph APIs, not textual GLSL substitutions.
+[r186 public TSL exports](https://github.com/mrdoob/three.js/blob/r186/src/Three.TSL.js)
+
 ## Failures, diagnostics, and lifecycle
 
 - Keep `renderer.debug.checkShaderErrors` enabled; use `renderer.debug.onShaderError` for custom compile/link diagnostics. `onBeforeCompile` only exposes patch input.
+- Inspect generated WebGPU/fallback source with `await renderer.debug.getShaderAsync(scene, camera, mesh)`; it returns `{ vertexShader, fragmentShader }` after compilation. For WebGL compile failures, `onShaderError` receives the GL program and assembled vertex/fragment shader handles: inspect `gl.getProgramInfoLog(program)`, `gl.getShaderInfoLog(shader)`, and `gl.getShaderSource(shader)`.
+- Isolate a problem visually with UV output `vec4(vUv, 0.0, 1.0)` or normalized normal output `vec4(normalize(vNormal) * 0.5 + 0.5, 1.0)`; decide whether the diagnostic is raw data or display color before adding output transforms. [r186 generated-node debugging](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js), [r186 WebGL error callback](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLProgram.js)
 - Never create shader variants or set `needsUpdate` in the frame loop for uniform-only animation.
 - Warm likely variants with `renderer.compileAsync(scene, camera)`; profile texture bandwidth, overdraw, and GPU time on target hardware.
 - Do not assume `mix` beats coherent branches, vector packing reduces cost, CPU precomputation is cheaper, or lookup textures improve performance; measure.

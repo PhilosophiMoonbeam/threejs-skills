@@ -125,6 +125,11 @@ scene.add(spot, spot.target);
 
 Do not assign `spot.shadow.camera.fov`: every shadow update derives it from `2 * spot.angle * spot.shadow.focus`. With nonzero `spot.distance`, 0.186.1 also derives the shadow-camera far plane from that distance. [SpotLightShadow revision 186](https://github.com/mrdoob/three.js/blob/r186/src/lights/SpotLightShadow.js)
 
+`spot.angle` is the cone half-angle in radians (at most `Math.PI / 2`); `penumbra` in `[0, 1]`
+softens the illumination edge, not the shadow-map filter. Set `point.power` or `spot.power` when
+authoring lumens; these are alternate accessors for intensity, not independent brightness controls.
+Do not revive removed `useLegacyLights`/`physicallyCorrectLights` switches.
+
 For a shadowed point light, align the illumination cutoff and shadow range. In 0.186.1 the WebGL shadow pass uses nonzero `point.distance` as the cube shadow camera's far plane; otherwise the camera's explicit `far` applies. Remember that one point-light shadow renders the scene six times. [WebGLShadowMap revision 186](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLShadowMap.js)
 
 ## RectAreaLight: renderer-specific setup
@@ -177,6 +182,45 @@ There is no core or addon `ContactShadows` object in 0.186.1. Contact shadows re
 
 `LightShadow` documents map size, bias, normal bias, radius, blur samples, and update controls. [LightShadow revision 186](https://github.com/mrdoob/three.js/blob/r186/src/lights/LightShadow.js)
 
+`light.shadow.intensity` in `[0, 1]` attenuates the shadow independently of light intensity:
+`0` removes its darkening and `1` applies the full shadow. Use this as an artistic control, not
+as a substitute for indirect illumination. When changing WebGL's global shadow type after
+rendering, invalidate affected material variants and existing shadow allocations as appropriate;
+prefer selecting the type during setup.
+
+### Grounding without a shadow map
+
+A soft radial-alpha image on a horizontal plane can ground an object without capturing geometry.
+It is a blob approximation, not physically computed contact shadowing: it does not reproduce
+silhouette, occlusion, light direction, or moving receivers. Prepare an owned canvas texture with
+black center alpha fading to zero at the edge using the textures topic in the skill index.
+This helper borrows that texture and owns only the mesh, geometry, and material. Adjust its
+position to the receiving plane and its scale to the subject; avoid intersecting geometry.
+
+<!-- check: blob-shadow -->
+```js
+import * as THREE from 'three';
+
+function addBlobShadow(scene, shadowTexture) {
+  const geometry = new THREE.PlaneGeometry(2, 2);
+  const material = new THREE.MeshBasicMaterial({
+    map: shadowTexture, transparent: true, depthWrite: false, toneMapped: false,
+  });
+  const blob = new THREE.Mesh(geometry, material);
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.002;
+  scene.add(blob);
+  return {
+    blob,
+    dispose() { scene.remove(blob); blob.dispose(); geometry.dispose(); material.dispose(); },
+  };
+}
+```
+
+For a captured silhouette, the official contact-shadow example renders depth from below and
+blurs it in separate passes; that pipeline belongs to post-processing in the skill index.
+[r186 contact shadows](https://github.com/mrdoob/three.js/blob/r186/examples/webgl_shadow_contact.html)
+
 ## Helpers
 
 ```js
@@ -185,14 +229,20 @@ import { RectAreaLightHelper } from 'three/addons/helpers/RectAreaLightHelper.js
 const lightHelper = new THREE.DirectionalLightHelper(sun, 2);
 const cameraHelper = new THREE.CameraHelper(sun.shadow.camera);
 const areaHelper = new RectAreaLightHelper(panel);
-scene.add(lightHelper, cameraHelper, areaHelper);
+scene.add(lightHelper, cameraHelper);
+panel.add(areaHelper); // RectAreaLightHelper must be a child of its light.
 
 // After changing a light, target, or shadow frustum:
 lightHelper.update();
 cameraHelper.update();
 ```
 
-Core also provides `PointLightHelper`, `SpotLightHelper`, and `HemisphereLightHelper`. Call each helper's `dispose()` when removing it.
+Core also provides `PointLightHelper`, `SpotLightHelper`, and `HemisphereLightHelper`. After
+changing color, call their `update()` methods; directional/spot/hemisphere helpers also need it
+after re-aiming. Update light/target world matrices before helper updates when working outside
+the normal render traversal. RectAreaLightHelper instead refreshes from `updateMatrixWorld()`.
+On teardown, remove helpers from their actual parents, then call each helper's `dispose()`.
+[r186 RectAreaLightHelper](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/helpers/RectAreaLightHelper.js) · [r186 DirectionalLightHelper](https://github.com/mrdoob/three.js/blob/r186/src/helpers/DirectionalLightHelper.js)
 
 ## IBL policy
 
@@ -202,6 +252,7 @@ Use an environment prepared by the textures topic. It owns HDR/EXR loading, mapp
 scene.environmentIntensity = 1;
 scene.backgroundIntensity = 0.6;
 scene.environmentRotation.y = Math.PI / 4;
+scene.backgroundBlurriness = 0.2; // Background only; does not change IBL roughness.
 scene.backgroundRotation.y = Math.PI / 4;
 ```
 
@@ -240,6 +291,13 @@ scene.add(await LightProbeGenerator.fromCubeRenderTarget(renderer, cubeTarget));
 ```
 
 `fromCubeRenderTarget()` is asynchronous in 0.186.1 and expects an RGBA cube target. `WebGPURenderer` no longer accepts `WebGLCubeRenderTarget`; use `CubeRenderTarget` and initialize the renderer before capture. Dispose the cube target after generation if it will not be reused. [LightProbeGenerator revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/lights/LightProbeGenerator.js) · [r186 renderer readiness](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js) · [182→183 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#182--183)
+
+For an already-loaded, CPU-readable LDR cube image, `LightProbeGenerator.fromCubeTexture(cube)`
+returns a probe synchronously; it does not own or dispose the cube. Configure the probe's
+`intensity`, add/remove it like a light, and retain the cube only if another consumer needs it.
+Use asynchronous render-target generation for GPU captures rather than assuming cube image
+pixels can be read from any compressed or render-target texture.
+[r186 LightProbeGenerator](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/lights/LightProbeGenerator.js)
 
 ## Spatial diffuse probe grids
 
@@ -299,6 +357,80 @@ outside the volume; positive falloff fades it. A single WebGL grid also applies 
 clamped sampling; with multiple grids, WebGL selects the first grid containing the object's
 world-space origin. Multiple-grid behavior is therefore not interchangeable.
 [r186 bake implementation](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/lighting/LightProbeGrid.js) · [r186 WebGL grid selection](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
+
+## Lighting layouts and runtime updates
+
+- Three-point: place a dominant key above/in front of the subject, a weaker fill on the opposite
+  side, and a rim behind it. Give only lights needing geometric occlusion a shadow map.
+- Outdoor: combine `SunLight` or a directional sun with modest sky/ground fill or an environment.
+  A hemisphere light supplies diffuse fill, not the sky's specular reflections.
+- Animate `position`, target, color, and `intensity` directly. Obtain elapsed seconds from the
+  application's single Timer/frame owner; do not start another render loop just to move a light.
+  For an orbit, set `(cos(t) * radius, height, sin(t) * radius)`, then refresh helpers and any
+  frozen shadow map. Remove targets and helpers with their light on teardown.
+- With the default lighting systems, changing light/shadow structure may rebuild lit-material
+  variants. Use `intensity = 0` for a temporary off state instead of repeated add/remove or
+  `castShadow` toggles; zero intensity alone does not remove a shadow caster's resource cost.
+
+## WebGPU light selection and batching
+
+`material.lightsNode = lights([key, fill])` from `three/tsl` restricts a NodeMaterial to chosen
+lights; camera layers do not provide per-mesh light linking. The material owns its node graph,
+not the light instances. Scene environment inheritance remains a separate material response.
+
+Choose an application-wide lighting system before rendering. `DynamicLighting` batches ordinary,
+unshadowed ambient/hemisphere/directional/point/spot lights into fixed-capacity arrays. Shadowed
+lights, projected/custom-color spots, node lights, and unsupported types retain the per-light
+path; their changes can still change programs. Introducing a new batched type/capacity is not
+a promise of zero compilation. Bound capacities to the application, rather than allowing growth
+to hide unexpectedly expensive lighting.
+
+<!-- check: dynamic-lighting-r186 -->
+```js
+import { DynamicLighting } from 'three/addons/lighting/DynamicLighting.js';
+
+function configureDynamicLighting(renderer) {
+  renderer.lighting = new DynamicLighting({
+    maxDirectionalLights: 2, maxPointLights: 32, maxSpotLights: 8, maxHemisphereLights: 1,
+  });
+}
+```
+
+Alternatively, import `ClusteredLighting` from `three/addons/lighting/ClusteredLighting.js` and
+assign `renderer.lighting = new ClusteredLighting(128, 32, 24, 32)`. Its constructor parameters
+are maximum lights, XY tile size, depth slices, and lights per cluster. It clusters unshadowed
+point lights; other lights keep their ordinary path. It adds light-list/compute/storage work and
+has finite capacities: profile depth complexity and overlapping light ranges instead of assuming
+it is always faster. These addons target `WebGPURenderer`, not the built-in WebGL lighting path.
+[r186 DynamicLighting](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/lighting/DynamicLighting.js) · [r186 batching eligibility](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/lighting/DynamicLightsNode.js) · [r186 ClusteredLighting](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/lighting/ClusteredLighting.js)
+
+### Node-controlled shadow color
+
+For WebGPU shadow-color transmission, set `renderer.shadowMap.transmitted = true` before
+building the shadow passes. `castShadowNode` supplies a `vec4` with linear working-space RGB and
+alpha; without it the shadow RGB is black. The alpha of `map`/`colorNode` also modulates caster
+alpha; their RGB does not automatically tint shadows. Receivers still need `receiveShadow = true`
+and lights/casters need the normal shadow flags. This is tinted shadow-map modulation, not
+spectral volume absorption, refraction, or caustics.
+[r186 caster RGB/alpha construction](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L3498-L3550)
+
+<!-- check: tinted-shadow-material-r186 -->
+```js
+import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { vec4 } from 'three/tsl';
+
+function createTintedShadowMaterial() {
+  const material = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.4 });
+  material.castShadowNode = vec4(1, 0.25, 0.05, 0.6);
+  return material; // Caller removes consumers, then disposes this material.
+}
+```
+
+`receivedShadowNode` is a function applied to each received shadow value, for example
+`material.receivedShadowNode = Fn(([shadow]) => shadow.mul(0.8).add(0.2))` with `Fn` from
+`three/tsl`; it lifts shadow darkening and does not require transmitted shadows. Preserve the
+shadow value's dimensionality instead of substituting unrelated fragment output.
+[r186 NodeMaterial shadow hooks](https://github.com/mrdoob/three.js/blob/r186/src/materials/nodes/NodeMaterial.js) · [r186 transmitted shadow sampling](https://github.com/mrdoob/three.js/blob/r186/src/nodes/lighting/ShadowNode.js)
 
 ## Failures, lifecycle, and cost
 

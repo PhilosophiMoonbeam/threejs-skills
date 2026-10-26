@@ -32,6 +32,8 @@ import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
 import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
+import { USDLoader } from "three/addons/loaders/USDLoader.js";
+import { UltraHDRLoader } from "three/addons/loaders/UltraHDRLoader.js";
 ```
 
 `RGBELoader` is a deprecated compatibility subclass in 0.186.1. Use `HDRLoader`.
@@ -71,6 +73,8 @@ manager.onLoad = () => {
 };
 ```
 
+`manager.onStart(url, itemsLoaded, itemsTotal)` fires when an idle manager becomes active,
+not once per file; install hooks before enqueueing work.
 `itemsLoaded` and `itemsTotal` count manager items, not bytes. Compound assets can discover buffers
 and textures after loading starts, so `itemsTotal` can grow and the ratio need not be monotonic.
 `GLTFLoader` adds an accounting item and documents its count as inaccurate. A failed `FileLoader`
@@ -189,9 +193,72 @@ workers within the application's CPU budget, and dispose each loader only after 
 [revision 186 GLTFLoader compression extensions](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/GLTFLoader.js) ·
 [revision 186 KTX2Loader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/KTX2Loader.js)
 
+## Loaded glTF content and placement
+
+Retain `scene` (default scene), `scenes`, `animations`, `cameras`, `asset` (version/generator),
+and `userData` when needed; node extras are on each object's `userData`. Inspect names with
+`gltf.scene.getObjectByName(name)` rather than assuming exporter-generated hierarchy paths.
+Animation playback and mixer retirement belong to animation through the skill index.
+Set mesh `castShadow`/`receiveShadow` by traversal only when intended; shadows also need renderer
+and light configuration. PBR materials require suitable lighting/environment, not a loader fix.
+[r186 GLTFLoader result and extras](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/GLTFLoader.js)
+`GLTFLoader` is renderer-independent. WebGPURenderer adapts supported conventional materials
+internally; loading does not require replacing each material with a node-material class.
+[r186 WebGPU glTF example](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_loader_gltf.html)
+
+For a standalone preview, normalize an **unattached** model using a parent wrapper so authored
+root transforms and animation bindings remain unchanged. This is not a unit conversion for an
+assembled scene. Bounds are a snapshot of the current pose; avoid empty/degenerate bounds.
+
+<!-- check: model-preview-placement -->
+```js
+function createModelPreview(model) {
+  if (model.parent) throw new Error("Preview model must be unattached.");
+  model.updateWorldMatrix(true, true);
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const extent = Math.max(size.x, size.y, size.z);
+  if (bounds.isEmpty() || !Number.isFinite(extent) || extent <= 0) {
+    throw new Error("Model has no finite nonzero bounds.");
+  }
+  const center = bounds.getCenter(new THREE.Vector3());
+  const preview = new THREE.Group();
+  const scale = 1 / extent;
+  preview.scale.setScalar(scale);
+  preview.position.copy(center).multiplyScalar(-scale);
+  preview.add(model);
+  return preview;
+}
+```
+
+The wrapper is application-owned; removing it does not free model resources.
+[r186 Box3.setFromObject](https://github.com/mrdoob/three.js/blob/r186/src/math/Box3.js)
+
 ## HDR and EXR transport
 
 Use `HDRLoader.loadAsync()` or `EXRLoader.loadAsync()` for environment files. Return the loaded texture to its owner; mapping, color-space annotation, WebGL/WebGPU preprocessing, and environment teardown belong to the textures topic in the skill index. [r186 HDRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/HDRLoader.js), [r186 EXRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/EXRLoader.js)
+
+`UltraHDRLoader` decodes gain-map JPEGs into a floating-point `DataTexture`, annotated
+`LinearSRGBColorSpace`; use the same equirectangular mapping/lifetime policy as HDR/EXR.
+It uses browser image/canvas APIs during reconstruction, so transport completion is not decode
+readiness: await `loadAsync()`. Ordinary JPEGs are not a substitute for gain-map authoring.
+[r186 UltraHDRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/UltraHDRLoader.js)
+
+## Image and cube transport
+
+`TextureLoader` handles browser-supported image formats, including WebP/AVIF when supported by
+the browser. Await decoding and handle rejection. glTF-loaded textures already carry their
+color-role annotation. For a manually loaded replacement on glTF UVs, set `flipY = false` before
+upload; color maps use `SRGBColorSpace`, non-color maps use `NoColorSpace`. Sampling, UV transforms,
+map recompilation, environment mapping, and generated PMREM ownership belong to textures and
+materials through the skill index.
+[r186 glTF texture orientation](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/GLTFLoader.js)
+
+`CubeTextureLoader.loadAsync([px, nx, py, ny, pz, nz])` takes six faces in +X, -X, +Y, -Y,
++Z, -Z order and returns an sRGB cube texture. Assign it to `scene.background` and/or
+`scene.environment` as appropriate; clear those references before its final owner's `dispose()`.
+Its HTML-image requests do not participate in manager abort.
+[r186 CubeTextureLoader](https://github.com/mrdoob/three.js/blob/r186/src/loaders/CubeTextureLoader.js)
 
 ## Gaussian splat loading
 
@@ -211,6 +278,13 @@ Resolve `three/webgpu` and `three/tsl` from the same package.
   It reads Gaussian-specific PLY properties and detects SH degree 0–3 from the
   header. `loadAsync(url)` resolves to splat geometry; `parse(arrayBufferOrString)`
   is synchronous. Ordinary `PLYLoader` remains the generic mesh/point loader.
+- `SPLATLoader` (`three/addons/loaders/SPLATLoader.js`) reads the uncompressed `.splat` format;
+  `KSPLATLoader` (`three/addons/loaders/KSPLATLoader.js`) reads `.ksplat`. Both return
+  `BufferGeometry` from `loadAsync()` and synchronously from `parse(arrayBuffer)`.
+  Substitute either in the owned loading pattern below; the same renderer and disposal
+  restrictions apply. They do not require a separately configured decoder.
+  [r186 SPLATLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/SPLATLoader.js) ·
+  [r186 KSPLATLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/KSPLATLoader.js)
 - SPZ's fflate and ZSTD decoder are bundled third-party libraries in the addon
   package; the ZSTD WASM is embedded in its module. No external decoder path,
   separate worker pool, or loader `dispose()` API is required. The module caches
@@ -334,6 +408,11 @@ as above. Compression decoders remain configured only for extensions the asset u
   A `0.01` scale is not universal. Inspect export units and `object.userData.unitScaleFactor`, then
   apply the application's deliberate unit conversion.
 - STL: `STLLoader.loadAsync()` returns `BufferGeometry`; construct the mesh and material explicitly.
+- USD: `USDLoader.loadAsync()` returns a `Group` and handles USD, USDA, USDC, and USDZ archives.
+  It replaces deprecated `USDZLoader`; this is the addon's supported USD subset, not a complete
+  USD authoring/composition engine. `parse(buffer, basePath, onLoad, onError)` returns a group
+  immediately, but its callback waits for referenced textures; do not treat the return value
+  as ready. [r186 USDLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/USDLoader.js)
 - PLY: `PLYLoader.loadAsync()` returns `BufferGeometry`. Three.js 0.186.1 preserves declared `double`/`float64`
   attributes as `Float64Array`, which WebGL/WebGPU attributes cannot render directly.
 
@@ -349,6 +428,9 @@ for (const [name, attribute] of Object.entries(geometry.attributes)) {
 ```
 
 Convert only float64 render attributes, not integer color or index data indiscriminately.
+For triangle meshes, compute missing normals only if needed and enable material `vertexColors`
+only when the geometry has a `color` attribute. Preserve authored normals and colors; PLY can
+also represent points, for which a mesh/normals recipe is inappropriate.
 [184→185 PLY migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185) ·
 [revision 186 PLYLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/PLYLoader.js) ·
 [revision 186 FBXLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/FBXLoader.js)
@@ -380,6 +462,26 @@ const gltf = await gltfLoader.parseAsync(
 [URL resolution](https://developer.mozilla.org/en-US/docs/Web/API/URL/URL) ·
 [revision 186 LoadingManager URL modifier](https://github.com/mrdoob/three.js/blob/r186/src/loaders/LoadingManager.js)
 
+For independent loads, start their `loadAsync()` calls together. `Promise.all()` rejects on the
+first error without cancelling siblings; use explicit ownership and settle/retire every result
+before abandoning a batch. A placeholder is separate application-owned geometry/material:
+remove and dispose it when replacing it, or on failure/teardown.
+
+For a single blob-backed texture, revoke its URL on both success and failure. The successful
+caller owns the texture; revocation is not texture disposal.
+
+<!-- check: blob-texture-load -->
+```js
+async function loadTextureFromBlob(blob, manager = THREE.DefaultLoadingManager) {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await new THREE.TextureLoader(manager).loadAsync(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+```
+
 ## Caching, performance, cloning, and cleanup
 
 `THREE.Cache` is disabled by default and globally stores resolved loader results. `FileLoader`
@@ -401,6 +503,13 @@ Close loader-owned `ImageBitmap` objects with `image.close()` only after every t
 Clearing a map is not disposal. Remove scene references before final resource disposal.
 [revision 186 SkeletonUtils.clone](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/utils/SkeletonUtils.js) ·
 [official disposal guide](https://threejs.org/manual/en/how-to-dispose-of-objects.html)
+
+In r186, call `object.dispose()` on each owned subtree object to release per-object renderer
+state (including instanced buffers). It does not recurse or release geometry/material/texture
+resources. Dispose skeletons separately after their last skinned user; cloned instances can
+still share geometry, materials, and textures. Do not copy a traversal that disposes aliases
+multiple times or closes a bitmap still used by another asset.
+[r186 Object3D.dispose](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js)
 
 ## Common failures and corrections
 

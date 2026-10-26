@@ -55,7 +55,7 @@ A version bump is a repository-wide cutover, not a text substitution:
 Run from the repository root after documentation changes:
 
 ```bash
-uvx --from skills-ref agentskills validate ./skills/threejs
+uvx --from skills-ref skills-ref validate ./skills/threejs
 npm ci
 npm run check
 git diff --check

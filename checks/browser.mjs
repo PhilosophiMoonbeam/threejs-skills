@@ -57,7 +57,8 @@ const server = createServer(async (req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 try {
-  browser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader'] });
+  // Native canvas presentation needs software Vulkan as well as ANGLE's WebGL fallback.
+  browser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 320, height: 180 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -230,6 +231,12 @@ try {
           samples.push([...await renderer.readRenderTargetPixelsAsync(target, 4, 4, 1, 1)]);
         }
         renderer.setRenderTarget(null);
+        renderer.render(scene, camera);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        renderer.setRenderTarget(target);
+        renderer.render(scene, camera);
+        const presentationSample = [...await renderer.readRenderTargetPixelsAsync(target, 4, 4, 1, 1)];
+        renderer.setRenderTarget(null);
         // A non-workgroup multiple also exercises dispatch bounds.
         const squares = [...await computeSquares(renderer, 65)];
 
@@ -285,7 +292,7 @@ try {
           scene.remove(second);
           oitSamples.push([...await renderOITFrame()]);
         }
-        return { samples, squares, retroSamples, oitUnsupported: !!oitUnsupported, oitSamples };
+        return { samples, presentationSample, squares, retroSamples, oitUnsupported: !!oitUnsupported, oitSamples };
       } finally {
         renderer.setAnimationLoop(null);
         renderer.setRenderTarget(null); scene.clear(); oit?.dispose(); retroreflective?.dispose();
@@ -300,6 +307,7 @@ try {
       continue;
     }
     assert.ok(result.samples[0][2] > result.samples[1][2], `${backend}: uniform changes rendered color`);
+    assert.deepEqual(result.presentationSample, result.samples.at(-1), `${backend}: canvas presentation preserves subsequent rendering and readback`);
     assert.deepEqual(result.squares.slice(0, 65), Array.from({ length: 65 }, (_, i) => i * i));
     console.log(`PASS: documented TSL material renders and compute readback is correct on ${backend}.`);
     const luminance = pixel => pixel[0] + pixel[1] + pixel[2];

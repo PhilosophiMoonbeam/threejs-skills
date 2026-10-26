@@ -1,6 +1,6 @@
 ---
 name: threejs
-description: Builds, debugs, migrates, and optimizes Three.js 0.186.1 applications across WebGL and WebGPU rendering, scene setup, geometry and Gaussian splats, materials and retroreflectivity, lighting and probe grids, shadows, textures and render targets, animation, asset loading, interaction and controls, shaders and TSL, post-processing and OIT, color management, disposal, and performance. Use when implementing or reviewing Three.js code or upgrading older Three.js code to 0.186.1.
+description: Builds, debugs, migrates, and optimizes Three.js 0.186.1 applications across WebGL and WebGPU rendering, scene setup, geometry and Gaussian splats, materials, lighting and shadows, textures, animation, asset loading, interaction, shaders and TSL, post-processing, teardown, and performance diagnostics. Covers third-party React Three Fiber/drei integration and offline glTF optimization. Use when implementing or reviewing Three.js code, building React-based 3D scenes, preparing glTF assets, or upgrading older Three.js code to 0.186.1.
 metadata:
   threejs-version: "0.186.1"
 ---
@@ -20,7 +20,7 @@ metadata:
 1. Inspect the package lock, import map, or CDN URLs and the existing renderer. For an unknown or different revision, read the migration reference before adapting code; identify the mismatch without silently upgrading a dependency.
 2. Match the work to the request:
    - **New application:** choose WebGL or WebGPU, one module-loading strategy, scene units, asset inputs, and lifecycle ownership. Start from the core-rendering baseline.
-   - **Existing application:** preserve its renderer, architecture, and lifecycle; change only the relevant subsystem. Inspect shared consumers before changing ownership or state.
+   - **Existing application:** preserve its renderer, framework, architecture, and lifecycle; change only the relevant subsystem. Inspect shared consumers before changing ownership or state.
    - **Migration:** establish source and target revisions, apply intervening deltas, and compare affected behavior and visuals.
 3. Read the smallest set of references selected below. Return to this index when another domain is needed.
 4. Exercise the affected surface: frame output and console, plus resize, interaction, async failure/cancellation, or teardown where the change touches them. Measure before optimizing.
@@ -65,7 +65,7 @@ Read the smallest set that owns the requested work. Return here to route an addi
 | Task signal | Read |
 |---|---|
 | new application, npm/CDN setup, import maps, scene, camera, renderer, scene graph, transforms, responsive sizing, render loop, rendering on demand, `Object3D.dispose`, async renderer disposal, WebGPU availability or backend capabilities | [core rendering](references/core-rendering.md) |
-| primitives, `BufferGeometry`, attributes, morph data, lines, points, instancing, Gaussian splat representation, in-place draw-mode conversion, async simplification | [geometry](references/geometry.md) |
+| primitives, `BufferGeometry`, attributes, morph data, lines, points, instancing, batching, Gaussian splat representation, draw-mode conversion, simplification | [geometry](references/geometry.md) |
 | built-in or PBR materials, transparency, blending, environment response, retroreflectivity | [materials](references/materials.md) |
 | lights, physically based intensity, shadows, IBL, `SunLight`, sky clouds, probe grids, `RectAreaLight`, `RectAreaLightUniformsLib`, `RectAreaLightTexturesLib`, or LTC initialization, helpers | [lighting and shadows](references/lighting-and-shadows.md) |
 | color or data textures, UV channels, HDR, PMREM, `TextureSource`, render or depth targets | [textures and render targets](references/textures-and-render-targets.md) |
@@ -74,6 +74,9 @@ Read the smallest set that owns the requested work. Return here to route an addi
 | raycasting, pointer coordinates, selection, controls, event cleanup | [interaction and controls](references/interaction-and-controls.md) |
 | `ShaderMaterial`, `RawShaderMaterial`, GLSL, TSL/nodes, `NodeMaterial`, WebGL node-material boundary, compute, extension boundaries | [shaders and TSL](references/shaders-and-tsl.md) |
 | `EffectComposer`, passes, WebGPU post-processing, `RenderPipeline`, `DirectRenderPipeline`, OIT, AO, resize, pass ordering | [post-processing](references/post-processing.md) |
+| slow frames, profiling, CPU/GPU bottlenecks, draw calls, memory counters, fill rate, LOD decisions, compile stalls | [performance](references/performance.md) |
+| React Three Fiber, R3F, drei, Canvas, JSX, hooks, demand rendering, React events or cached assets | [React Three Fiber](references/react-three-fiber.md) |
+| offline glTF inspection, validation, optimization, Draco/meshopt encoding, KTX2/WebP/AVIF conversion, gltfjsx | [asset pipeline](references/asset-pipeline.md) |
 | old code, deprecated names, removed APIs, revision upgrade | [0.186.1 migration](references/0.186.1-migration.md) |
 
 ## Cross-domain invariants

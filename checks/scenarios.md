@@ -69,3 +69,27 @@ Prompt: “Make this surface retroreflective and demonstrate how it differs from
 Fixture: `retroreflective-material` on a tilted plane, a fixed camera, and a directional light moved between coaxial and mirror-reflection directions. Evaluate the existing WebGPURenderer backend rather than silently replacing it.
 
 Acceptance: actual pixels change when retroreflectivity changes from zero to one; the coaxial return becomes brighter and the ordinary mirror-direction peak becomes weaker. Keep surface color, roughness, geometry, exposure, and camera fixed. Dispose the exclusively owned material after removing its consumers.
+
+## Measure before optimizing
+
+Prompt: “This viewer misses its frame budget. Identify the bottleneck before changing quality or scene structure.”
+
+Fixture: an existing r186 renderer with two logical-frame submissions, a shadow-casting light, and a post-processing pipeline. Evaluate WebGLRenderer and WebGPURenderer separately; preserve their current backend.
+
+Acceptance: measure the complete logical frame without losing earlier passes to automatic counter resets. Distinguish CPU submission time, callback interval, GPU duration, and memory counts versus bytes. Include internal output/shadow work rather than assuming one mesh equals one draw. Restore instrumentation state on success and failure; compare one controlled workload change without claiming hardware-independent timing improvements.
+
+## React scene and cached-model ownership
+
+Prompt: “Build this React viewer with on-demand rendering, selectable models, and safe remounting. Keep its existing renderer.”
+
+Fixture: the marked Fiber lifecycle and cached-model examples, two copies of one locally served animated GLB, and a sized host. Use the reference's pinned integration packages. Test explicit manual advancement separately from demand rendering.
+
+Acceptance: idle rendering stops, pointer interaction updates actual output, and manual timestamps use seconds. Resize and imperative mutations request or explicitly advance the appropriate frame. Copies have independent transforms while sharing cache-owned geometry/materials; unmounting does not dispose another consumer's assets. Root retirement stops subscribers and eventually retires its owned renderer. Native WebGPU evidence requires the native backend and actual rendered pixels, not initialization or render-call counts alone.
+
+## Offline glTF delivery without semantic loss
+
+Prompt: “Prepare this animated GLB for delivery. Preserve named parts, clip playback, and editable source files.”
+
+Fixture: a textured GLB with six named nodes sharing a mesh and an animation targeting one node. Supply a separate static copy for an intentional instancing comparison. Use the pipeline reference's pinned tools; provide the external KTX encoder only when evaluating that branch.
+
+Acceptance: inspect and validate before selecting transforms; write distinct candidate outputs. Preserve required names, animation targets, poses, texture roles, and world-space appearance through decode/render, allowing codec-required reconstruction nodes. Do not apply destructive optimize defaults blindly. Verify the final extension/decoder contract, keep geometry compression last, and distinguish WebP/AVIF transfer savings from GPU-compressed KTX2 storage. Generated gltfjsx output must point to the delivered asset and preserve needed animation/decoder configuration.

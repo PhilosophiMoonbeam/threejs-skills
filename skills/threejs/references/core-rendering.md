@@ -190,6 +190,42 @@ function disposeScheduling() {
 
 Set `frameId` back to `null` before rendering so damping-triggered `change` events schedule at most one next frame. Invalidate after controls, resize, and asset/data changes; call `disposeScheduling()` before disposing controls or the renderer. This avoids a continuously running loop and avoids duplicate queued frames. [Rendering on demand manual](https://threejs.org/manual/en/rendering-on-demand.html)
 
+## Scene appearance and renderer options
+
+`scene.background` is independent of lighting: a `Color` clears to a solid color,
+an ordinary `Texture` fills the screen, and a `CubeTexture` or texture with
+`EquirectangularReflectionMapping` provides a skybox. `scene.environment` supplies
+image-based lighting; it does not automatically show a background. Use the asset
+loading and lighting topics through the index for environment preparation.
+`scene.environmentIntensity` scales the scene environment, whereas
+`material.envMapIntensity` scales that material's explicit `envMap`. Standard and
+physical materials support environment lighting on both renderers; WebGL also
+supports the legacy Lambert/Phong environment path.
+[r186 Scene](https://github.com/mrdoob/three.js/blob/r186/src/scenes/Scene.js),
+[r186 WebGL environment uniforms](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
+
+```js
+scene.background = new THREE.Color(0x111318);
+scene.fog = new THREE.Fog(0x111318, 10, 100); // camera-space depth, scene units
+// Alternative, not an additional fog layer:
+// scene.fog = new THREE.FogExp2(0x111318, 0.02);
+```
+
+Fog affects materials with fog support enabled; matching the clear color hides
+the far boundary. `Fog` uses near/far distances; `FogExp2` uses density. Neither
+is volumetric lighting. [r186 Fog](https://github.com/mrdoob/three.js/blob/r186/src/scenes/Fog.js),
+[r186 FogExp2](https://github.com/mrdoob/three.js/blob/r186/src/scenes/FogExp2.js)
+
+Choose constructor-only context options before creating `WebGLRenderer`:
+`antialias: true` requests MSAA, `alpha: true` permits page compositing, and
+`stencil: true` allocates a stencil buffer when the technique requires one.
+`powerPreference` is a browser hint, not a performance guarantee.
+For transparent output, leave `scene.background = null` and use
+`renderer.setClearColor(0x000000, 0)` with an alpha-enabled renderer.
+Do not enable `preserveDrawingBuffer` by default; see screenshot guidance below.
+Shadows also require `renderer.shadowMap.enabled`, participating light/object
+flags, and the lighting topic's setup. [r186 WebGLRenderer options](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
+
 ## Cameras
 
 A `PerspectiveCamera(fov, aspect, near, far)` uses a vertical field of view in degrees. Keep `near > 0` and the near/far interval as tight as practical for depth precision. After changing `fov`, `aspect`, `near`, or `far`, call `updateProjectionMatrix()`.
@@ -225,6 +261,16 @@ function layoutArrayCamera(renderer, subCameras, columns, rows) {
 }
 ```
 
+Initialize each `subCamera.viewport` to a `Vector4` before calling this layout.
+If subcameras are not scene children, call `subCamera.updateMatrixWorld()` after
+moving them; updating the `ArrayCamera` does not update its `cameras` array.
+WebGL culls against the outer `ArrayCamera` frustum, not each subcamera's frustum:
+configure that camera's pose/projection to enclose all required views. Common
+`Renderer` uses the union of subcamera frusta. Do not disable scene-wide culling
+to conceal an incorrectly configured outer camera.
+[r186 WebGL culling and array rendering](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js),
+[r186 FrustumArray](https://github.com/mrdoob/three.js/blob/r186/src/math/FrustumArray.js)
+
 A `CubeCamera` capture must exclude the reflective object to prevent feedback:
 
 ```js
@@ -255,6 +301,77 @@ Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Th
 - World-space getters require caller-owned targets. Reuse a `Vector3` or `Quaternion`; cache results only with explicit invalidation when transforms change.
 - `visible` disables an object and its descendants. `layers` filters cameras/raycasters. `renderOrder` adjusts ordering but does not repair incorrect transparency or depth configuration.
 
+`add(child)` reparents while preserving the local transform; `attach(child)`
+preserves its world transform. `attach()` does not support non-uniformly scaled
+scene graphs. `lookAt(target)` takes a world-space target and also does not support
+non-uniformly scaled ancestors. Ordinary objects face local +Z; cameras look −Z.
+`localToWorld(vector)` and `worldToLocal(vector)` mutate the supplied position.
+`layers.enable(1)` retains layer 0, while `layers.set(1)` replaces the mask;
+enable the relevant layer on cameras and lights as well. `traverse()` visits the
+root and every descendant; collect hierarchy changes and apply them after traversal.
+[r186 Object3D](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js)
+
+Use `pivot` for a rotation/scale center in object-local coordinates without
+rewriting shared geometry. This CPU-only example returns a hierarchy whose child
+keeps its world position across reparenting:
+
+<!-- check: transform-hierarchy -->
+```js
+import * as THREE from 'three';
+
+function createTransformHierarchy() {
+  const root = new THREE.Group();
+  const left = new THREE.Group();
+  const right = new THREE.Group();
+  root.add(left, right);
+  left.position.set(2, 0, 0);
+  right.position.set(-2, 0, 0);
+  const child = new THREE.Object3D();
+  child.position.set(1, 0, 0);
+  left.add(child);
+  root.updateMatrixWorld(true);
+  const before = child.getWorldPosition(new THREE.Vector3());
+  right.attach(child);
+  const after = child.getWorldPosition(new THREE.Vector3());
+  right.pivot = new THREE.Vector3(1, 0, 0);
+  right.rotation.y = Math.PI / 2;
+  root.updateMatrixWorld(true);
+  return { root, left, right, child, before, after };
+}
+```
+
+The `before` and `after` vectors both contain `(3, 0, 0)`; subsequent rotation
+uses the right group's local pivot. Notify all returned objects on retirement;
+this example creates no GPU resources. [r186 pivot composition](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js)
+
+### Core math conventions
+
+Most vector, matrix, quaternion, and color operations mutate their receiver.
+Reuse scratch objects in loops; use `copy()` for existing storage and `clone()`
+only when an independent allocation is needed.
+
+- `Vector3.add/sub`, `multiplyScalar`, `lerp`, `normalize`, `dot`, `cross`, and
+  `angleTo` cover common vector work; angles are radians. Compare `lengthSq()` or
+  `distanceToSquared()` against squared thresholds to avoid a square root.
+- `worldPosition.project(camera)` maps world coordinates to NDC;
+  `ndc.unproject(camera)` maps back. Ensure camera world/projection matrices are
+  current; NDC depth conventions differ between WebGL and WebGPU.
+- `matrix.compose(position, quaternion, scale)` builds a transform;
+  `decompose()` extracts components when the matrix is decomposable (not general
+  shear). `matrix.multiply(other)` computes `matrix * other` (other applied first);
+  `premultiply(other)` reverses this order. `applyMatrix4()` transforms positions;
+  use `transformDirection()` for directions, and a normal matrix for normals.
+- Build quaternions with `setFromAxisAngle(normalizedAxis, radians)` or
+  `setFromEuler(new THREE.Euler(x, y, z, order))`; Euler order matters.
+  `slerp(target, alpha)` interpolates rotation; `invert()` expects a unit quaternion.
+- `MathUtils.clamp`, `lerp`, `mapLinear`, `smoothstep`, `degToRad`, `radToDeg`,
+  and `randFloat` avoid hand-written scalar conversions/interpolation.
+
+[r186 Vector3](https://github.com/mrdoob/three.js/blob/r186/src/math/Vector3.js),
+[r186 Matrix4](https://github.com/mrdoob/three.js/blob/r186/src/math/Matrix4.js),
+[r186 Quaternion](https://github.com/mrdoob/three.js/blob/r186/src/math/Quaternion.js),
+[r186 MathUtils](https://github.com/mrdoob/three.js/blob/r186/src/math/MathUtils.js)
+
 ### Matrix invalidation contract
 
 - With `matrixAutoUpdate = true` (default), Three.js composes position/quaternion/scale into `matrix` before rendering.
@@ -263,13 +380,33 @@ Use `CubeRenderTarget`, not `WebGLCubeRenderTarget`, with `WebGPURenderer` in Th
 - `updateMatrixWorld(force)` updates descendants; reserve `force = true` for an intentional full refresh.
 - `updateWorldMatrix(updateParents, updateChildren, force)` gives explicit ancestor/descendant control. In Three.js 0.186.1 it honors `matrixWorldNeedsUpdate`. [r186 Object3D](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js), [r184→r185](https://github.com/mrdoob/three.js/wiki/Migration-Guide#184--185)
 
+### Visibility and culling
+
+`visible = false` hides a subtree, while camera layers filter individual objects.
+Keep `frustumCulled` enabled when CPU bounds describe the rendered shape.
+`Mesh`, `Line`, and `Points` implement r186 `intersectsFrustum(frustum)` using
+object/geometry bounding spheres; `Sprite` uses its sprite bound. The base
+`Object3D` method is an empty override hook, not a general scene/group query.
+Custom renderables can override it with their own bounds: return a boolean and
+handle `FrustumArray` for common-renderer `ArrayCamera`.
+
+Refresh bounds after vertex/instance changes; for shader-only deformation,
+supply conservative CPU bounds or disable culling on that object. Culling changes
+render submission, not animation evaluation. Geometry through the SKILL index
+owns bound-update recipes.
+[r186 Object3D hook](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js#L1063-L1072),
+[r186 Mesh implementation](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js#L218-L230),
+[r186 common renderer culling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L3264-L3294),
+[r186 Frustum](https://github.com/mrdoob/three.js/blob/r186/src/math/Frustum.js)
+
 ## Renderer output and color
 
 - `renderer.outputColorSpace` already defaults to `THREE.SRGBColorSpace`; assigning it again is unnecessary.
 - Lighting calculations use Linear-sRGB. `Color` stores Linear-sRGB working values; hex and CSS colors are interpreted as sRGB and converted automatically.
 - `color.setRGB(r, g, b)` treats values as working-space components unless its optional source color space is supplied. Linear/HDR values may exceed 1.
+- `color.setHSL(h, s, l)` also uses the working space unless a source color space is supplied. `color.lerp(other, alpha)` and `multiplyScalar(value)` mutate the color; interpolate linear values, not unconverted sRGB components. [r186 Color](https://github.com/mrdoob/three.js/blob/r186/src/math/Color.js)
 - Mark color PNG/JPEG textures with `texture.colorSpace = THREE.SRGBColorSpace`; non-color/data maps generally retain `THREE.NoColorSpace`. Color HDR data such as EXR uses `THREE.LinearSRGBColorSpace`. Texture ownership belongs to the textures topic. [Color management](https://threejs.org/manual/en/color-management.html)
-- `renderer.toneMapping = THREE.ACESFilmicToneMapping` is an artistic choice; Three.js 0.186.1 still defaults to `NoToneMapping`.
+- `renderer.toneMapping = THREE.ACESFilmicToneMapping` is an artistic choice; Three.js 0.186.1 still defaults to `NoToneMapping`. Set `renderer.toneMappingExposure` to adjust exposure when using a tone mapper; AgX and Neutral are other available operators. [r186 renderer tone mapping](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js)
 - Direct rendering to the screen applies renderer tone mapping and output-color-space conversion; ordinary offscreen render targets remain in their configured texture color space. A WebGL `EffectComposer` should end with `OutputPass` for final tone mapping and color conversion. [Color management](https://threejs.org/manual/en/color-management.html), [r186 WebGLRenderer output](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js), [r154→r155](https://github.com/mrdoob/three.js/wiki/Migration-Guide#154--155), [r186 OutputPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/OutputPass.js)
 - A WebGPU `RenderPipeline` normally leaves `outputColorTransform` enabled; disable it only when the pipeline graph explicitly adds `renderOutput()`. `preserveDrawingBuffer` is a WebGL-only renderer option and normally remains `false`; for a WebGL screenshot, render immediately before `canvas.toBlob()` or `toDataURL()`. [r186 RenderPipeline](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/RenderPipeline.js), [r186 WebGPURenderer options](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/WebGPURenderer.js), [Screenshot guidance](https://threejs.org/manual/en/tips.html#taking-a-screenshot-of-the-canvas)
 
@@ -305,13 +442,11 @@ async function disposeWebGPU({ renderer, pendingReadbacks, resizeObserver, timer
 
 ## Render performance
 
-- Measure draw calls with `renderer.info.render.calls` for WebGL or `renderer.info.render.drawCalls` for WebGPU, and triangles with `renderer.info.render.triangles` for either renderer; reset behavior changes if `renderer.info.autoReset` is disabled. [r186 WebGLInfo](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLInfo.js), [r186 common Info](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Info.js)
-- Reduce draw calls through instancing or deliberate geometry merging; keep material-count and update-cost tradeoffs visible.
-- Keep frustum culling enabled. `Mesh`, `Line`, and `Points` implement r186 `intersectsFrustum(frustum)` using object/geometry bounding spheres; `Sprite` uses its sprite bound. The base `Object3D` method is an empty override hook, not a general scene/group query. A custom renderable can override it for its own bound; return a boolean and handle `FrustumArray` when supporting common-renderer `ArrayCamera`. Recompute bounds after vertex/instance changes; enlarge CPU bounds or disable culling for shader-only deformation. Culling affects rendering, not animation evaluation. [r186 Object3D hook](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js#L1063-L1072), [r186 Mesh implementation](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js#L218-L230), [r186 common renderer culling](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js#L3264-L3294), [r186 Frustum](https://github.com/mrdoob/three.js/blob/r186/src/math/Frustum.js)
-- Cap device pixel ratio when fill rate dominates; lower render-target resolution for expensive offscreen effects.
-- Avoid per-frame allocations, forced whole-tree matrix updates, redundant world-space queries, and unconditional cube-map captures.
-- Update static shadows portably per light: set `light.shadow.autoUpdate = false`, then set `light.shadow.needsUpdate = true` whenever that light's shadow must refresh. The equivalent `renderer.shadowMap` flags are WebGL-specific. `PCFShadowMap` is the soft WebGL default in Three.js 0.186.1; do not select deprecated `PCFSoftShadowMap`. [r186 common renderer](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js), [r186 ShadowNode](https://github.com/mrdoob/three.js/blob/r186/src/nodes/lighting/ShadowNode.js), [r186 WebGLShadowMap](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLShadowMap.js), [r181→r182](https://github.com/mrdoob/three.js/wiki/Migration-Guide#181--182)
-- Use `LOD` only when its transition and memory costs are justified. Profile CPU traversal, upload bandwidth, draw calls, and fragment cost separately.
+Use Performance through the SKILL index for whole-frame counters, CPU/GPU
+bottleneck diagnosis, resolution budgets, compilation and optimization decisions.
+Choose geometry merging, instancing, batching or LOD only after identifying the
+limiting work; Geometry owns their API and lifecycle recipes. This reference
+retains frame scheduling, resize, matrix invalidation, visibility and disposal.
 
 ## Official sources
 

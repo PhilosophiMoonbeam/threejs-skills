@@ -93,8 +93,8 @@ canvas.addEventListener('pointercancel', onPointerLeave);
 canvas.addEventListener('pointerdown', onPointerDown);
 
 // Called by the application's single frame loop after updating object transforms.
-function render() {
-  controls.update();
+function render(deltaSeconds) {
+  if (controls.enabled) controls.update(deltaSeconds);
   if (pointerInside && pointerDirty) {
     pointerDirty = false;
     updateHover(pickNearest());
@@ -124,11 +124,13 @@ Use pointer events for mouse, pen, and touch. Set `canvas.style.touchAction = "n
 - A rejected parent's layer does not prune recursion; descendants are tested independently.
 - Set `near` and `far` to restrict accepted distances. Tune `params.Line.threshold` and `params.Points.threshold` in world units.
 - Mesh back faces are not hit with the default front-side material; use the material's `side` setting intentionally.
+- Raycasting does not reject `visible = false` objects; filter eligibility in the
+  application or use layers. A shared triangle edge can yield coincident hits.
 
 Treat an intersection as a type-dependent union, not as a fixed record:
 
 - All hits have `distance`, world-space `point`, and `object`.
-- Mesh hits may have `face` as `{ a, b, c, normal, materialIndex }`, `faceIndex`, `uv`, `uv1`, interpolated `normal`, and `barycoord`. There is no core `Face3` in 0.186.1. Attribute-derived values exist only when the geometry supplies the attributes.
+- Mesh hits may have `face` as `{ a, b, c, normal, materialIndex }`, `faceIndex`, `uv`, `uv1`, interpolated `normal`, and `barycoord`. `point` is world-space; `face.normal` and interpolated `normal` are object-local (the latter is oriented toward the ray). Transform a normal with the object's world normal matrix before using it as a world direction. There is no core `Face3` in 0.186.1. Attribute-derived values exist only when the geometry supplies the attributes.
 - Line and Points hits use `index`; Points also uses `distanceToRay`. Their face fields are `null`.
 - `InstancedMesh` adds `instanceId`; `BatchedMesh` adds `batchId`.
 
@@ -163,6 +165,68 @@ For box selection, import `SelectionBox` and `SelectionHelper` from `three/addon
 
 `selectionBox.collection` contains selected objects; `selectionBox.instances[uuid]` and `selectionBox.batches[uuid]` contain selected IDs for instanced and batched meshes. Selection tests geometry bounding-sphere centers for ordinary objects and transform origins for instanced or batched instances; it does not test triangle overlap. `select()` clears `collection`, but not the instance or batch result maps. Before selection when the traversed hierarchy can change, reset `selectionBox.instances = {}` and `selectionBox.batches = {}`, or filter their keys to current objects. Remove custom document listeners and call `selectionHelper.dispose()`. See the [revision 186 SelectionBox source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/interactive/SelectionBox.js).
 
+For `BatchedMesh`, `selectionBox.batches[uuid]` reports logical instance IDs,
+not geometry IDs or draw-order indices. r186 box selection cannot traverse a
+batch containing deleted instance slots: its loop expects
+`validateInstanceId(id)` to return `false`, but that method throws for a deleted
+ID, aborting selection even when other instances remain active. Use this addon
+only with batches without deleted slots in the traversed hierarchy; filtering
+results afterward cannot prevent the exception. This is an addon limitation,
+not a requirement to patch or suppress errors in `BatchedMesh`.
+[r186 SelectionBox batch loop](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/interactive/SelectionBox.js#L268-L290),
+[r186 batch validation](https://github.com/mrdoob/three.js/blob/r186/src/objects/BatchedMesh.js#L453-L458)
+
+For an operational rectangle query, reuse one picker and call `select()` once
+when the captured drag ends. Inputs are `{ clientX, clientY }` pairs saved at
+pointer down/up, not drawing-buffer pixels. The result array and ID maps belong
+to the picker and are replaced by the next selection; copy only when persisting
+a selection. Run only in a deliberate selection mode with camera gestures
+disabled; this query does not install event listeners.
+
+<!-- check: box-selection -->
+```js
+import { SelectionBox } from 'three/addons/interactive/SelectionBox.js';
+
+function createBoxPicker(camera, scene, canvas) {
+  const selectionBox = new SelectionBox(camera, scene, camera.far);
+  function select(start, end) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    selectionBox.startPoint.set(
+      ((start.clientX - rect.left) / rect.width) * 2 - 1,
+      -((start.clientY - rect.top) / rect.height) * 2 + 1, 0.5,
+    );
+    selectionBox.endPoint.set(
+      ((end.clientX - rect.left) / rect.width) * 2 - 1,
+      -((end.clientY - rect.top) / rect.height) * 2 + 1, 0.5,
+    );
+    camera.updateWorldMatrix(true, false);
+    scene.updateWorldMatrix(true, true);
+    selectionBox.instances = {};
+    selectionBox.batches = {};
+    return selectionBox.select();
+  }
+  return { selectionBox, select };
+}
+```
+
+Create `new SelectionHelper(renderer, 'selectBox')` only while selection mode is
+active; it connects to the canvas immediately and expects it to have a parent
+element. Its rectangle uses client coordinates, hence the fixed-position CSS.
+The helper does not capture pointers or handle cancellation: the application's
+named `pointercancel`, `lostpointercapture`, and `blur` handlers must end the
+gesture, set `helper.isDown = false`, and remove `helper.element`; use
+`helper.dispose()` at mode teardown. Remove those application handlers too.
+
+`SelectionBox` does not apply Raycaster layers, visibility, or occlusion rules;
+filter its results according to the application's selection policy. Its r186
+orthographic path hardcodes near/far NDC at `-1`/`1`: use a non-reversed,
+WebGL-coordinate orthographic projection, or an application selection frustum
+adapted to the actual projection. Do not assume WebGPU orthographic or
+reversed-depth box selection is renderer-neutral.
+[r186 SelectionBox projection and traversal](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/interactive/SelectionBox.js#L136-L321),
+[r186 SelectionHelper lifecycle](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/interactive/SelectionHelper.js)
+
 ## Ray-to-plane and screen coordinates
 
 Reuse the raycaster and destination, and handle a miss:
@@ -179,7 +243,53 @@ function pointerOnPlane(event) {
 }
 ```
 
-A miss means the ray is parallel or the intersection lies behind it. Snapping `object.position.y = 0` is local-space snapping, not a world-ground constraint for a transformed parent. To place a world point in canvas CSS pixels, call `object.getWorldPosition(scratch).project(camera)`, then map NDC through the canvas rectangle. See [`Ray.intersectPlane`](https://threejs.org/docs/pages/Ray.html#intersectPlane) and [`Object3D.getWorldPosition`](https://threejs.org/docs/pages/Object3D.html#getWorldPosition).
+A miss means the ray is parallel or the intersection lies behind it. Snapping
+`object.position.y = 0` is local-space snapping, not a world-ground constraint
+for a transformed parent. To place a picked world point, first copy it to a
+scratch vector, update the parent's world matrix, then use
+`object.position.copy(object.parent.worldToLocal(scratch))`; without a parent,
+copy the world point directly. Do not mutate a hit point that other consumers
+still need.
+[r186 Ray.intersectPlane](https://github.com/mrdoob/three.js/blob/r186/src/math/Ray.js),
+[r186 Object3D coordinate conversion](https://github.com/mrdoob/three.js/blob/r186/src/core/Object3D.js)
+
+For world-to-screen overlays, cache the canvas CSS rectangle outside the frame
+loop. Refresh it on resize, scroll, or layout changes. Supply a world position
+and a reusable `Vector2` destination; a null result hides an out-of-frustum
+overlay. Update changed scene/camera matrices before projecting. This helper
+handles the camera's actual WebGL/WebGPU depth convention, including reversed
+depth; do not blindly test all projections against Z in `[-1, 1]`.
+
+<!-- check: screen-projection -->
+```js
+import * as THREE from 'three';
+
+function createScreenProjector(camera, canvas) {
+  const point = new THREE.Vector3();
+  let left = 0, top = 0, width = 0, height = 0;
+  function updateViewport() {
+    const rect = canvas.getBoundingClientRect();
+    left = rect.left; top = rect.top;
+    width = rect.width; height = rect.height;
+  }
+  function project(worldPosition, target) {
+    if (width <= 0 || height <= 0) return null;
+    point.copy(worldPosition).applyMatrix4(camera.matrixWorldInverse);
+    if (camera.isPerspectiveCamera && point.z >= 0) return null;
+    point.applyMatrix4(camera.projectionMatrix);
+    const minZ = camera.coordinateSystem === THREE.WebGLCoordinateSystem
+      && !camera.reversedDepth ? -1 : 0;
+    if (point.x < -1 || point.x > 1 || point.y < -1 || point.y > 1
+      || point.z < minZ || point.z > 1) return null;
+    return target.set(left + (point.x + 1) * width / 2, top + (1 - point.y) * height / 2);
+  }
+  updateViewport();
+  return { project, updateViewport };
+}
+```
+
+[r186 camera projection](https://github.com/mrdoob/three.js/blob/r186/src/cameras/PerspectiveCamera.js),
+[r186 NDC depth conventions](https://github.com/mrdoob/three.js/blob/r186/src/math/Matrix4.js#L1140-L1246)
 
 ## Controls lifecycle
 
@@ -188,6 +298,16 @@ Addon control constructors given a DOM element connect immediately. `enabled = f
 ### OrbitControls and MapControls
 
 Import from `three/addons/controls/OrbitControls.js` or `MapControls.js`. Configure `target`, distance/zoom limits, polar and azimuth limits, and `enableRotate`, `enableZoom`, or `enablePan`. Damping requires `update()` every frame while it settles. Auto-rotation also requires `update()` every frame; pass `deltaSeconds` to `update(deltaSeconds)` for refresh-rate-independent auto-rotation. With no auto-rotation, the delta argument is optional. MapControls follows the same update and lifecycle contract. In a shared `renderer.setAnimationLoop` callback, derive one frame delta and pass that same value to every time-dependent subsystem. See [OrbitControls](https://threejs.org/docs/pages/OrbitControls.html), [MapControls](https://threejs.org/docs/pages/MapControls.html), and the [revision 186 OrbitControls source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/OrbitControls.js).
+
+`zoomToCursor = true` directs wheel zoom toward the pointer. `change` reports
+camera changes; `start`/`end` bracket gestures. MapControls defaults left drag to
+pan and right drag to orbit, with `screenSpacePanning = false` for ground-parallel
+panning. `TrackballControls.staticMoving = true` disables its inertia; otherwise
+tune `dynamicDampingFactor`. Disabling input does not stop a control's explicit
+`update()` from applying damping or auto-rotation: skip camera-control updates
+while another tool owns the camera.
+[r186 OrbitControls](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/OrbitControls.js),
+[r186 MapControls](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/MapControls.js)
 
 ### TrackballControls
 
@@ -228,6 +348,13 @@ function updatePointerLock(delta) {
 
 Register named `keydown`, `keyup`, `blur`, `lock`, and `unlock` handlers and remove them at teardown. See [PointerLockControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/PointerLockControls.js).
 
+`controls.object` is the managed camera; the removed `getObject()` accessor is
+not needed. With conventional world-up, `moveForward()` moves parallel to the
+ground; `moveRight()` follows the camera's right axis. For eased movement, cache
+a scalar speed and update it with `THREE.MathUtils.damp(current, target, lambda,
+delta)`, then move by `speed * delta`; clear speed as well as keys on unlock and
+blur. Camera motion is not collision detection or a physics controller.
+
 ### DragControls
 
 ```js
@@ -237,27 +364,89 @@ const drag = new DragControls(objects, camera, renderer.domElement);
 
 The `objects` array is mutable. Current configuration includes `recursive` (default `true`), `transformGroup`, `raycaster`, `mouseButtons`, `touches`, and `rotateSpeed`; left/middle default to pan and right to rotate. Listen for `hoveron`, `hoveroff`, `dragstart`, `drag`, and `dragend`. Use `connect(element)`, `disconnect()`, and `dispose()`; removed legacy accessors and `activate()`/`deactivate()` are not 0.186.1 APIs. See [DragControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/DragControls.js) and the [r167 → r168 migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#167--168).
 
+Panning uses a camera-facing plane; rotation uses camera up/right axes, not a
+world-ground constraint. With `transformGroup = true`, pass the intended group
+as the only draggable root; dragging selects the outermost ancestor Group, so
+avoid unintended enclosing Groups. A drag event's object can be a Group without
+a material. Pause competing camera input on `dragstart`, restore its previous
+enabled state on `dragend` and teardown, and invalidate picking/rendering on
+`drag`. Use the ray-to-plane pattern for a true world-ground drag rather than
+clamping local Y. Preserve prior colors/material state when highlighting.
+
 ### TransformControls
 
+<!-- check: transform-editor -->
 ```js
-import { TransformControls } from "three/addons/controls/TransformControls.js";
-const transform = new TransformControls(camera, renderer.domElement);
-const helper = transform.getHelper();
-scene.add(helper);
-transform.attach(selectedObject);
-function onDraggingChanged(event) {
-  orbit.enabled = !event.value;
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+function createTransformEditor(camera, canvas, scene, orbit, object, invalidate) {
+  const transform = new TransformControls(camera, canvas);
+  const helper = transform.getHelper();
+  scene.add(helper);
+  transform.attach(object); // The object must already be in the scene graph.
+  transform.setMode('translate');
+  transform.setSpace('local');
+  transform.setTranslationSnap(0.5);
+  transform.setRotationSnap(Math.PI / 12);
+  transform.setScaleSnap(0.25);
+  let dragging = false;
+  let orbitWasEnabled = orbit.enabled;
+  function onDraggingChanged(event) {
+    if (event.value && !dragging) {
+      orbitWasEnabled = orbit.enabled;
+      dragging = true;
+      orbit.enabled = false;
+    } else if (!event.value && dragging) {
+      dragging = false;
+      orbit.enabled = orbitWasEnabled;
+    }
+  }
+  function dispose() {
+    transform.removeEventListener('dragging-changed', onDraggingChanged);
+    transform.removeEventListener('objectChange', invalidate);
+    if (dragging) orbit.enabled = orbitWasEnabled;
+    transform.detach();
+    scene.remove(helper);
+    transform.dispose(); // Owns helper geometry/material disposal.
+  }
+  transform.addEventListener('dragging-changed', onDraggingChanged);
+  transform.addEventListener('objectChange', invalidate);
+  return { transform, dispose };
 }
-transform.addEventListener("dragging-changed", onDraggingChanged);
 ```
 
-Use `attach()`, `detach()`, `setMode()`, `setSpace()`, snapping properties, and `setSize()`. If the helper uses a non-default layer, configure `transform.getRaycaster().layers` to match. On teardown, remove the application listener, detach, remove the helper, and call `transform.dispose()`: it disposes the helper's geometry and materials, so do not also call `helper.dispose()` or generic recursive disposal. Adding the controls object itself to the scene is obsolete since [r168 → r169](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169); see [TransformControls revision 186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/TransformControls.js).
-```js
-transform.removeEventListener("dragging-changed", onDraggingChanged);
-transform.detach();
-scene.remove(helper);
-transform.dispose();
-```
+Use `setMode('translate' | 'rotate' | 'scale')`, `setSpace('local' | 'world')`,
+`setSize()`, `attach()`/`detach()`, and snapping methods. Rotation snap is radians;
+scale always acts in local space. Supply an invalidation callback that updates
+both picking and rendering after `objectChange`. If adding keyboard shortcuts
+for modes or Escape/detach, keep named handlers and remove them at teardown.
+
+If the helper uses a non-default layer, configure
+`transform.getRaycaster().layers` to match. Do not add the controls object itself
+to the scene, or independently dispose the helper: the control owns its geometry
+and materials. Other application resources remain caller-owned.
+[r168 → r169 helper migration](https://github.com/mrdoob/three.js/wiki/Migration-Guide#168--169),
+[r186 TransformControls](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/controls/TransformControls.js)
+
+## WebGPU and GPU-deformation boundary
+
+Camera controls and ordinary CPU Raycaster queries work with either renderer.
+Core rendering through the skill index owns initialization of
+`WebGPURenderer`; establish its camera projection before the first pick.
+Both renderers use the same canvas-relative pointer X/Y, independent of device
+pixel ratio. On final teardown stop the application loop before controls and
+listeners; the WebGPU-capable renderer's loop shutdown/disposal is async.
+[r186 common renderer lifecycle](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/Renderer.js)
+
+CPU mesh raycasting includes core CPU-accessible morph/skinning transforms, but
+not shader displacement or TSL `positionNode`/GPU-only compute changes. Pick a
+deliberately sized CPU proxy, reproduce the deformation on the CPU, or choose a
+separate GPU-picking design through the shaders/rendering topics in the index.
+An undisplaced proxy is an approximation, not exact visible-surface coverage.
+Refresh bounds after CPU deformation; GPU displacement also needs conservative
+render bounds. SelectionBox has the projection restrictions stated above.
+[r186 Mesh raycasting](https://github.com/mrdoob/three.js/blob/r186/src/objects/Mesh.js),
+[r186 SkinnedMesh raycasting](https://github.com/mrdoob/three.js/blob/r186/src/objects/SkinnedMesh.js)
 
 ## Performance
 

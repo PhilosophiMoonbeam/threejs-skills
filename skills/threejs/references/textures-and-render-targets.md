@@ -25,28 +25,42 @@ HDRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/HDR
 
 ## Minimal loading pattern
 
+Keep the asset owner alive until setup settles. This helper owns both textures and its material;
+the caller removes all consumers before calling `dispose()`. For cancellation, shared caches, or
+loading-manager policy, use asset loading in the skill index.
+
+<!-- check: loaded-texture-pair -->
 ```js
 import * as THREE from 'three';
 
-const manager = new THREE.LoadingManager();
-manager.onProgress = (url, loaded, total) => console.log(`${loaded}/${total}`, url);
-
-const loader = new THREE.TextureLoader(manager);
-const [baseColor, normal] = await Promise.all([
-  loader.loadAsync('/assets/base-color.webp'),
-  loader.loadAsync('/assets/normal.webp'),
-]);
-baseColor.colorSpace = THREE.SRGBColorSpace;
-
-const material = new THREE.MeshStandardMaterial({ map: baseColor, normalMap: normal });
+async function loadTexturedMaterial(baseURL, normalURL) {
+  const loader = new THREE.TextureLoader();
+  const results = await Promise.allSettled([loader.loadAsync(baseURL), loader.loadAsync(normalURL)]);
+  const failure = results.find(result => result.status === 'rejected');
+  if (failure) {
+    for (const result of results) if (result.status === 'fulfilled') result.value.dispose();
+    throw failure.reason;
+  }
+  const [baseColor, normal] = results.map(result => result.value);
+  baseColor.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshStandardMaterial({ map: baseColor, normalMap: normal });
+  return {
+    material,
+    dispose() { material.dispose(); baseColor.dispose(); normal.dispose(); },
+  };
+}
 ```
 
-`TextureLoader.loadAsync()` is the canonical Promise API. Its `load()` method starts asynchronous work but immediately returns a placeholder `Texture`, useful when a material must receive a non-null map before compilation.
-`TextureLoader` does not support byte-level `onProgress`; pass `undefined` in that callback position and use `LoadingManager.onProgress` for item progress.
-See [`TextureLoader`](https://threejs.org/docs/pages/TextureLoader.html).
+`TextureLoader.loadAsync()` is the canonical Promise API. `load()` starts asynchronous work but
+immediately returns a placeholder `Texture`, useful for a non-null map before compilation.
+`TextureLoader` does not support byte-level `onProgress`; use `LoadingManager.onProgress` for item
+progress. For a directly constructed `Texture(image)`, await `image.decode()` (with CORS configured
+before `src` for cross-origin images), then set `texture.needsUpdate = true`; construction alone
+does not signal that image pixels are ready. See [`TextureLoader`](https://threejs.org/docs/pages/TextureLoader.html)
+and [r186 Texture](https://github.com/mrdoob/three.js/blob/r186/src/textures/Texture.js).
 
 Await a texture before constructing its material when practical. Adding or removing a map on an already-rendered material changes shader features, so set `material.needsUpdate = true`.
-Replacing one non-null map with another normally does not require recompilation.
+Replacing one non-null map avoids recompilation only if its shader-keyed characteristics remain unchanged; the materials topic owns those rules.
 
 ## UV sets and texture transforms
 
@@ -75,6 +89,16 @@ enable only the UV attributes selected by material texture channels.
 
 `texture.offset`, `repeat`, `rotation`, and `center` update its UV transform; offsets are not restricted to `[0, 1]`. Keep `matrixAutoUpdate` enabled unless manually maintaining `texture.matrix`.
 
+### Atlas regions
+
+For a top-origin atlas grid, select a cell with `repeat = (1/columns, 1/rows)` and
+`offset = (column/columns, 1-(row+1)/rows)`. Use one texture clone per independently transformed
+consumer, not one mutable transform shared by every sprite. Clones share the image source;
+GPU-allocation sharing is backend/sampler dependent, not a portable guarantee of one upload.
+Pad/extrude cells for filtering at every mip level; clamping only protects the outer image edge.
+Do not use repeat wrapping to tile one atlas cell: it repeats the whole atlas.
+[r186 Texture.copy](https://github.com/mrdoob/three.js/blob/r186/src/textures/Texture.js) · [r186 WebGL source/cache keys](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js)
+
 ## Wrapping, filtering, mipmaps, and anisotropy
 
 - `ClampToEdgeWrapping` is the default; use `RepeatWrapping` or `MirroredRepeatWrapping` for tiling.
@@ -101,17 +125,105 @@ Apply anisotropy selectively to oblique surfaces because it increases sampling c
 
 ## Dynamic, raw, and compressed textures
 
-- `CanvasTexture(canvas)` uploads canvas pixels; mark `needsUpdate` after later drawing. Set sRGB for canvas-authored colors.
-- `VideoTexture(video)` updates from video frames automatically; do not toggle `needsUpdate` each frame. Set sRGB for ordinary color video.
-- `DataTexture(data, width, height, ...)` owns caller-provided typed data; set `needsUpdate = true` after construction or mutation. Keep non-color arrays at `NoColorSpace`.
-- `CubeTexture` stores six faces. `DataArrayTexture`, `Data3DTexture`, and compressed variants serve array, volume, and GPU-compressed data.
-- `DepthTexture` stores depth for sampling.
+- `CanvasTexture(canvas)` signals the first upload; mark `needsUpdate` after later drawing. Set sRGB
+  for canvas-authored colors. Raw arrays instead need an explicit first update.
+- `VideoTexture(video)` follows available video frames automatically and disables mipmaps; do not
+  toggle `needsUpdate` every animation frame. Ordinary color video needs sRGB. Configure CORS
+  before `src`, handle `await video.play()` rejection, and respect autoplay/user-gesture rules.
+  Disposing the texture does not pause the application-owned video or stop its media tracks.
+- `DataTexture(data, width, height, ...)` references caller-provided typed data; it does not transfer
+  or copy ownership. Defaults are nearest filtering, `flipY = false`, and no mipmaps.
+  Set `needsUpdate = true` after construction/mutation. Keep scalar/vector data at `NoColorSpace`;
+  explicitly annotate raw bytes authored as sRGB colors.
+- `DataArrayTexture` stores equal-sized discrete 2D layers; `Data3DTexture` stores a volume with a
+  continuous third coordinate. Neither is an ordinary 2D `map` slot. Use a matching custom sampler
+  (`sampler2DArray`/`sampler3D` in WebGL GLSL3) or TSL sampling with the corresponding dimensionality.
+- `CubeTexture` stores six faces; `DepthTexture` stores sampled depth.
 
+This procedural canvas helper owns no renderer or material; the caller owns the returned texture
+and calls `dispose()` after all consumers retire. Redraw the canvas, then mark `needsUpdate`.
+
+<!-- check: procedural-canvas-texture -->
 ```js
-const values = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]);
-const dataTexture = new THREE.DataTexture(values, 2, 1, THREE.RGBAFormat);
-dataTexture.needsUpdate = true;
+import * as THREE from 'three';
+
+function createLabelTexture(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('A 2D canvas context is required.');
+  ctx.fillStyle = '#202020'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff'; ctx.font = '32px sans-serif';
+  ctx.fillText(text, 8, 44);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
 ```
+
+The following WebGPU factory samples layer `1` of a two-layer raw color array. Each layer is
+2 × 1 RGBA8 pixels, packed consecutively. The caller owns both resources and their consumers.
+
+<!-- check: raw-array-texture -->
+```js
+import { DataArrayTexture, MeshBasicNodeMaterial, SRGBColorSpace } from 'three/webgpu';
+import { texture, uv, int } from 'three/tsl';
+
+function createArrayMaterial() {
+  const bytes = new Uint8Array([
+    255, 0, 0, 255, 255, 255, 0, 255,
+    0, 128, 255, 255, 0, 255, 128, 255,
+  ]);
+  const layers = new DataArrayTexture(bytes, 2, 1, 2);
+  layers.colorSpace = SRGBColorSpace;
+  layers.needsUpdate = true;
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = texture(layers, uv()).depth(int(1));
+  return { material, layers, dispose() { material.dispose(); layers.dispose(); } };
+}
+```
+
+For partial array uploads, mutate the backing layer, call `addLayerUpdate(layerIndex)`, then set
+`needsUpdate = true`; first upload must initialize the complete array. Recreate the texture if
+dimensions/format/type change after first use. [r186 DataArrayTexture](https://github.com/mrdoob/three.js/blob/r186/src/textures/DataArrayTexture.js) · [r186 TextureNode.depth](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/TextureNode.js)
+
+### WebCodecs frames and experimental HTML
+
+`VideoFrameTexture.setFrame(frame)` marks an update but does not close the frame. Transfer each
+decoded frame to one owner, retain it until the renderer has consumed it, and close it on
+replacement/teardown; `texture.dispose()` alone does not close it. Stop/close the decoder before
+retiring its texture. Browser WebCodecs support, codec configuration, and input demuxing are
+application prerequisites, not provided by Three.js.
+
+<!-- check: video-frame-texture-owner -->
+```js
+import { VideoFrameTexture, SRGBColorSpace } from 'three';
+
+function createFrameTextureOwner() {
+  const texture = new VideoFrameTexture();
+  texture.colorSpace = SRGBColorSpace;
+  let current;
+  return {
+    texture,
+    // Takes ownership of a distinct frame; do not replace during an in-flight upload.
+    setFrame(frame) {
+      const previous = current;
+      texture.setFrame(frame);
+      current = frame;
+      previous?.close();
+    },
+    dispose() { texture.dispose(); current?.close(); current = undefined; },
+  };
+}
+```
+
+`HTMLTexture(element)` depends on experimental HTML-in-Canvas plus the backend's element-copy
+API (`texElementImage2D` for WebGL, `queue.copyElementImageToTexture` for WebGPU). It is not a
+portable DOM screenshot utility. The renderer reparents the element into its canvas and listens
+for paint events; first pixels need a paint before upload. Check support before choosing this
+path, annotate color content, dispose the texture, and restore/remove the owned element during
+teardown. Prefer CanvasTexture for portable generated labels.
+[r186 VideoTexture](https://github.com/mrdoob/three.js/blob/r186/src/textures/VideoTexture.js) · [r186 VideoFrameTexture](https://github.com/mrdoob/three.js/blob/r186/src/textures/VideoFrameTexture.js) · [r186 HTMLTexture](https://github.com/mrdoob/three.js/blob/r186/src/textures/HTMLTexture.js) · [r186 HTML WebGL upload](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js) · [r186 HTML WebGPU upload](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgpu/utils/WebGPUTextureUtils.js)
 
 Use KTX2 for GPU-compressed delivery; the container owns its compressed mip levels. In r186,
 `KTX2Loader` derives the texture color space from the KTX2 data-format descriptor: valid sRGB,
@@ -158,6 +270,12 @@ scene.background = environment;
 `WebGLRenderer` internally PMREM-filters supported equirectangular/cube environments for physically based materials; keeping the source texture as `scene.background` preserves resolution.
 [Migration r129→r130](https://github.com/mrdoob/three.js/wiki/Migration-Guide#129--130)
 
+For LDR cube images, `CubeTextureLoader.loadAsync([px, nx, py, ny, pz, nz])` returns a cube with
+reflection mapping and sRGB annotation already set. All faces must have compatible square
+dimensions. `UltraHDRLoader` from `three/addons/loaders/UltraHDRLoader.js` is another HDR image
+option for supported gain-map JPEGs; retain the loader's radiance annotation. Do not infer color
+space solely from a filename extension. [r186 CubeTextureLoader](https://github.com/mrdoob/three.js/blob/r186/src/loaders/CubeTextureLoader.js) · [r186 UltraHDRLoader](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/loaders/UltraHDRLoader.js)
+
 For explicit WebGL PMREM ownership, use this alternative to the source-texture assignment above. Start with an existing `WebGLRenderer` and an unused `scene.environment`; keep both alive until the load settles. This source is used only for preprocessing, so it can be disposed afterward. If also used as a background, retain it until that consumer retires.
 
 <!-- check: pmrem-environment -->
@@ -189,6 +307,34 @@ r186 PMREM uses a Golden-Angle spiral blur for `fromScene()` with nonzero `sigma
 With `WebGPURenderer`, assign the HDR/EXR source directly and retain it until every environment/background consumer is retired; let the renderer preprocess it. Do not pass a WebGL PMREM target into that path. [r186 WebGPU environment example](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_loader_gltf.html)
 
 Clear `scene.environment` and `scene.background` before disposing their final owned texture. If an explicit PMREM target is used, dispose it after its last consumer; dispose the generator after preprocessing. Materials own environment response; lighting owns scene/background intensity and orientation.
+
+### Environments generated from a scene
+
+`PMREMGenerator.fromScene()` also captures procedural environments. This WebGL helper owns the
+temporary room/generator and returns the owning target, not a texture with its owner discarded.
+Assign `target.texture` to the environment and retire it using the same consumer-clearing rules
+above. Explicit preprocessing is useful for controlled readiness/ownership; it is not a quality
+upgrade over the automatic equirectangular path.
+
+<!-- check: generated-room-environment -->
+```js
+import { PMREMGenerator } from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+function createRoomEnvironment(renderer) {
+  const room = new RoomEnvironment();
+  const generator = new PMREMGenerator(renderer);
+  try {
+    return generator.fromScene(room, 0.04);
+  } finally {
+    room.dispose();
+    generator.dispose();
+  }
+}
+```
+
+Use `PMREMGenerator` from `three/webgpu` with an initialized `WebGPURenderer` for its node path,
+not the WebGL generator/target. [r186 RoomEnvironment](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/environments/RoomEnvironment.js) · [r186 common PMREMGenerator](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/extras/PMREMGenerator.js)
 
 ## Render and depth targets
 
@@ -230,7 +376,64 @@ See [output color space](https://threejs.org/manual/en/color-management.html#out
 [`RenderTarget`](https://threejs.org/docs/pages/RenderTarget.html), and [r186
 RenderTarget source](https://github.com/mrdoob/three.js/blob/r186/src/core/RenderTarget.js).
 
-Dynamic `CubeCamera` capture is expensive: hide the reflective object as needed, update only at the required cadence, and dispose its cube render target.
+For MRT, construct `new THREE.RenderTarget(width, height, { count: 2 })` and use
+`.textures[0]`/`.textures[1]`; `WebGLMultipleRenderTargets` is obsolete. The pass must explicitly
+write each attachment using matching GLSL outputs or a WebGPU `mrt(...)` node; allocating
+attachments alone does not produce multiple meaningful outputs. Never sample an attachment
+while rendering into that same attachment: exclude its consumers from the capture or ping-pong
+between targets. MSAA color resolves and storage are separate concerns; see the storage rules below.
+[r186 RenderTarget](https://github.com/mrdoob/three.js/blob/r186/src/core/RenderTarget.js)
+
+### Dynamic cube reflections
+
+This WebGL capture helper hides the complete reflective object during all six faces and restores
+its prior visibility even on failure. It captures the object's world position, not a parent-local
+position. Exclude every other target-texture consumer too. The caller owns the scene/object/
+material; this helper owns the target, and restores the previous explicit environment on teardown.
+
+<!-- check: dynamic-cube-reflection -->
+```js
+import * as THREE from 'three';
+
+function createCubeReflection(renderer, scene, object, material) {
+  const target = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
+  const camera = new THREE.CubeCamera(0.1, 100, target);
+  const previousMap = material.envMap;
+  material.envMap = target.texture;
+  material.needsUpdate = true;
+  return {
+    update() {
+      object.getWorldPosition(camera.position);
+      const visible = object.visible;
+      object.visible = false;
+      try { camera.update(renderer, scene); }
+      finally { object.visible = visible; }
+    },
+    dispose() {
+      if (material.envMap === target.texture) {
+        material.envMap = previousMap;
+        material.needsUpdate = true;
+      }
+      target.dispose();
+    },
+  };
+}
+```
+
+Update only when the reflection changes, not necessarily every frame. With `WebGPURenderer`,
+use `CubeRenderTarget` from `three/webgpu` and `await renderer.init()` before synchronous
+`CubeCamera.update()`. [r186 CubeCamera](https://github.com/mrdoob/three.js/blob/r186/src/cameras/CubeCamera.js)
+
+### TSL sampling coordinates
+
+NodeMaterial's ordinary `map`, `normalMap`, and other supported slots remain useful.
+For custom sampling, `texture(map)` selects the texture's channel and applies its UV transform.
+Supplying explicit coordinates, such as `texture(map, uv(1))` or
+`texture(map, uv().mul(0.5).add(0.25))`, replaces that automatic coordinate path; offset/repeat/
+rotation are not additionally applied unless requested with `.setUpdateMatrix(true)`.
+Import `texture`/`uv` from `three/tsl` and NodeMaterials from `three/webgpu`; graph authoring
+belongs to the shaders topic in the skill index.
+[r186 TextureNode transform selection](https://github.com/mrdoob/three.js/blob/r186/src/nodes/accessors/TextureNode.js)
 
 ### Viewport units
 

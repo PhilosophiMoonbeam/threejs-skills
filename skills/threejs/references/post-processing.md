@@ -45,6 +45,40 @@ Do not set an individual pass's `renderToScreen`. On every render, `EffectCompos
 assigns it to the last enabled pass when `composer.renderToScreen` is true. Set the
 composer property false only for offscreen output. [EffectComposer r186](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/EffectComposer.js).
 
+`composer.render()` advances its internal timer and supplies delta seconds to
+time-driven passes. Pass an explicit delta only when the application owns time.
+`pass.enabled = false` skips a pass without rebuilding the chain.
+
+### Multisampling belongs to the render target
+
+The default composer targets are half-float and **not multisampled**;
+`WebGLRenderer({ antialias: true })` affects the default framebuffer, not these
+offscreen targets. To request composer MSAA, supply a multisampled target.
+The composer owns the supplied target and its clone; do not dispose it separately.
+The caller owns the renderer, passes, camera, and loop.
+
+<!-- check: post-msaa -->
+```js
+import { WebGLRenderTarget, HalfFloatType } from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+
+function createMSAAComposer(renderer, width, height) {
+  const target = new WebGLRenderTarget(width, height, {
+    type: HalfFloatType,
+    samples: Math.min(4, renderer.capabilities.maxSamples),
+  });
+  const composer = new EffectComposer(renderer, target);
+  composer.setSize(width, height); // Logical dimensions; applies the captured DPR.
+  return composer;
+}
+```
+
+Require WebGL 2 and support for the selected half-float render-target/sample
+configuration. MSAA smooths rasterized geometry, not every edge introduced by a
+later full-screen filter. Profile before combining it with post-process AA.
+[r186 composer targets, timer, and sizing](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/EffectComposer.js),
+[r186 WebGL multisample storage](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLTextures.js)
+
 ## WebGL ordering invariant
 
 Canonical order is:
@@ -92,7 +126,7 @@ Keep it before `OutputPass`. [Source](https://github.com/mrdoob/three.js/blob/r1
 
 ### Anti-aliasing
 
-- Prefer renderer MSAA when it meets the target and post-processing preserves it.
+- Renderer MSAA alone does not multisample a composer's offscreen scene; use the target setup above when needed.
 - Use `new SMAAPass()` before `OutputPass`; width/height constructor arguments were
   removed in r175.
 - Use `new FXAAPass()` after `OutputPass`; its `setSize()` owns reciprocal resolution.
@@ -124,6 +158,19 @@ composer.addPass(dof);
 Increasing `aperture` increases defocus blur; decreasing it keeps more in focus. Sources:
 [SSAOPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/SSAOPass.js), [BokehPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/BokehPass.js).
 
+`SSAOPass.minDistance`/`maxDistance` gate accepted depth differences; expose
+`ssao.output = SSAOPass.OUTPUT.SSAO` (or `Blur`, `Depth`, `Normal`) to inspect the
+source of artifacts instead of tuning blindly. AO is screen-space: it cannot
+recover occluders outside the image.
+
+DOF focus is positive distance along the camera's view direction, not general
+Euclidean distance or an object's local position. For a world-space target, update
+the camera's world matrix, transform the target by `camera.matrixWorldInverse`,
+and set focus to its negated view-space Z. `BokehPass` reads the previous color
+image and renders its own depth, so keep the preceding `RenderPass`.
+[r186 Bokeh shader depth/focus](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/shaders/BokehShader.js),
+[r186 SSAO output modes](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/SSAOPass.js)
+
 ### Corrected constructors
 
 - Film grain: `new FilmPass(0.35, false)`; 0.186.1 accepts `(intensity, grayscale)`.
@@ -134,6 +181,104 @@ Sources: [FilmPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/po
 [HalftonePass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/HalftonePass.js),
 [r155→r156](https://github.com/mrdoob/three.js/wiki/Migration-Guide#155--156),
 [r174→r175](https://github.com/mrdoob/three.js/wiki/Migration-Guide#174--175).
+
+### Outline, grain, glitch, vignette, and grading
+
+Choose these passes independently; this factory exposes all controls without
+requiring every effect to be enabled. The caller owns the WebGL renderer,
+scene/camera resources, scene membership, resize handling, and loop; this helper
+owns its composer and passes. Call `composer.render()` from the existing loop,
+resize through the composer, and stop the loop before disposal.
+
+<!-- check: post-stylized-webgl -->
+```js
+import { Vector2 } from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
+import { FilmPass } from 'three/addons/postprocessing/FilmPass.js';
+import { GlitchPass } from 'three/addons/postprocessing/GlitchPass.js';
+import { HalftonePass } from 'three/addons/postprocessing/HalftonePass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
+import { ColorCorrectionShader } from 'three/addons/shaders/ColorCorrectionShader.js';
+
+function createStylizedComposer(renderer, scene, camera, selectedObjects = []) {
+  const composer = new EffectComposer(renderer);
+  const outline = new OutlinePass(new Vector2(1, 1), scene, camera, selectedObjects);
+  outline.edgeStrength = 3;
+  outline.visibleEdgeColor.set(0xffffff);
+  outline.hiddenEdgeColor.set(0x190a05);
+  const film = new FilmPass(0.35, false);
+  const glitch = new GlitchPass();
+  glitch.goWild = false; // true glitches every frame, false at random intervals.
+  const halftone = new HalftonePass({ radius: 4, scatter: 0 });
+  const vignette = new ShaderPass(VignetteShader);
+  vignette.uniforms.offset.value = 1;
+  vignette.uniforms.darkness.value = 1;
+  const grade = new ShaderPass(ColorCorrectionShader);
+  grade.uniforms.powRGB.value.set(1, 1, 1); // Neutral, unlike its default (2, 2, 2).
+  const effects = { outline, film, glitch, halftone, vignette, grade };
+  for (const effect of [film, glitch, halftone]) effect.enabled = false;
+  for (const pass of [new RenderPass(scene, camera), ...Object.values(effects), new OutputPass()]) {
+    composer.addPass(pass);
+  }
+  return {
+    composer,
+    effects,
+    dispose() {
+      for (const pass of composer.passes) pass.dispose();
+      composer.dispose();
+    },
+  };
+}
+```
+
+`outline.selectedObjects` is a live selection list; edge colors distinguish visible
+and occluded edges. Film grain advances from the composer's delta. Halftone shape
+and radius are shader controls, not a render-resolution switch. Color correction
+computes `mulRGB * pow(color + addRGB, powRGB)` in this linear chain; keep the
+power's base nonnegative. A LUT authored for display-encoded input instead needs
+an explicit color-domain decision, not automatic placement among linear filters.
+[r186 OutlinePass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/OutlinePass.js),
+[r186 FilmPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/FilmPass.js),
+[r186 GlitchPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/GlitchPass.js),
+[r186 vignette](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/shaders/VignetteShader.js),
+[r186 color correction](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/shaders/ColorCorrectionShader.js)
+
+### Pixelation renders the scene
+
+`RenderPixelatedPass` replaces `RenderPass`; following it with another scene render
+would replace its work. It generates beauty/depth/normal buffers itself.
+
+<!-- check: post-pixelated-webgl -->
+```js
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+function createPixelatedComposer(renderer, scene, camera) {
+  const composer = new EffectComposer(renderer);
+  const pixelated = new RenderPixelatedPass(6, scene, camera);
+  pixelated.normalEdgeStrength = 0.3;
+  pixelated.depthEdgeStrength = 0.4;
+  composer.addPass(pixelated);
+  composer.addPass(new OutputPass());
+  return {
+    composer,
+    pixelated,
+    dispose() {
+      for (const pass of composer.passes) pass.dispose();
+      composer.dispose();
+    },
+  };
+}
+```
+
+Use the same caller ownership, loop, resize, and teardown contract as the preceding
+factory. Pixel size is in effective target pixels, so DPR changes its CSS appearance.
+[r186 RenderPixelatedPass](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/RenderPixelatedPass.js)
 
 ## Custom WebGL pass
 
@@ -152,6 +297,45 @@ composer.addPass(tintPass);
 
 Update custom uniforms yourself only when the pass lacks `setSize()`. Preserve alpha deliberately for later composition.
 
+A spatial warp samples the previous texture at displaced UVs rather than tinting
+its color. This pass owns only its shader material/fullscreen resources; the
+composer owns chain placement. Call `update(elapsedSeconds)` from the application
+timer and dispose the pass with the other passes.
+
+<!-- check: post-wave-webgl -->
+```js
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+function createWavePass() {
+  const pass = new ShaderPass({
+    uniforms: {
+      tDiffuse: { value: null }, time: { value: 0 }, intensity: { value: 1 },
+    },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float time;
+      uniform float intensity;
+      varying vec2 vUv;
+      void main() {
+        vec2 sampleUv = vUv;
+        sampleUv.x += sin(sampleUv.y * 10.0 + time) * 0.01 * intensity;
+        gl_FragColor = texture2D(tDiffuse, sampleUv);
+      }`,
+  });
+  return {
+    pass,
+    update(elapsedSeconds) { pass.uniforms.time.value = elapsedSeconds; },
+    dispose() { pass.dispose(); },
+  };
+}
+```
+
+Out-of-range UVs use the input target texture's wrapping; clamp explicitly if the
+effect must not sample its border. No output chunks belong in this linear pass.
+[r186 ShaderPass texture binding](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/ShaderPass.js)
+
 ## Selective effects and composition
 
 Selective bloom needs two explicit paths, not “render bloom, then render the scene”:
@@ -163,9 +347,64 @@ Selective bloom needs two explicit paths, not “render bloom, then render the s
    `ShaderPass` sampling the bloom composer's output texture, then `OutputPass`.
 
 Follow the [r186 selective-bloom example](https://github.com/mrdoob/three.js/blob/r186/examples/webgl_postprocessing_unreal_bloom_selective.html).
+
+Keep a bloom-only render's background black/absent too: backgrounds are not meshes
+and otherwise bloom and are added twice. Restore `scene.background`, clear state,
+and replaced materials in `finally`, not just after a successful render.
+Use `bloomComposer.readBuffer.texture` after its render rather than assuming a
+particular ping-pong target is always final; additional swapping passes can change
+the final buffer. Enable the bloom layer with `object.layers.enable(layer)` so it
+remains in the normal camera layer. Resize and dispose both composers and all
+passes, plus the temporary dark material.
+[r186 composer swaps/output buffer](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/EffectComposer.js)
 For multiple scenes, render one source offscreen and combine textures explicitly.
 Two screen-rendering composers do not imply compositing. When directly layering passes,
 configure `RenderPass.clear`; `renderer.autoClear = false` does not change its default `clear = true`. [Source](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/postprocessing/RenderPass.js).
+
+## WebGL renderer-owned effects without a composer
+
+For a simple linear effect list, `WebGLRenderer.setEffects()` is an alternative,
+not another stage after `EffectComposer`. It requires `outputBufferType` set to
+`HalfFloatType` or `FloatType`, uses internal HDR buffers, and performs output
+conversion automatically. Do not include `OutputPass` or sRGB-input `FXAAPass`.
+`antialias: true` multisamples its scene target; effect ping-pong buffers remain
+single-sampled. Size only the renderer.
+
+<!-- check: post-built-in-effects -->
+```js
+import { WebGLRenderer, HalfFloatType, Vector2 } from 'three';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+function createBuiltinBloomRenderer(width, height, dpr = 1) {
+  const renderer = new WebGLRenderer({ antialias: true, outputBufferType: HalfFloatType });
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(width, height);
+  const bloom = new UnrealBloomPass(new Vector2(width, height), 1, 0.4, 0.85);
+  renderer.setEffects([bloom]);
+  return {
+    renderer,
+    bloom,
+    dispose() {
+      renderer.setAnimationLoop(null);
+      renderer.setEffects([]);
+      bloom.dispose();
+      renderer.dispose();
+    },
+  };
+}
+```
+
+The caller owns canvas attachment, scene resources, and the animation callback:
+call this renderer's `render(scene, camera)` normally. The factory owns the
+renderer and bloom pass; remove its canvas when unmounting.
+
+In **0.186.1**, the renderer calls the internal effect runner without a delta.
+Time-driven passes such as `FilmPass` therefore receive `undefined` and corrupt
+their time uniform; use `EffectComposer` for those. Do not assume composer masking
+or all arbitrary pass-state conventions are supported by this simpler runner.
+Passes retain their own resources and are not disposed by removing the list.
+[r186 setEffects and invocation](https://github.com/mrdoob/three.js/blob/r186/src/renderers/WebGLRenderer.js),
+[r186 HDR effect runner, MSAA, and disposal](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl/WebGLOutput.js)
 
 ## WebGPU: RenderPipeline and TSL
 
@@ -202,6 +441,177 @@ choose the graph below or `ao()` from `GTAONode.js` with depth/view-space normal
 For lighting-aware integration, use an AO pre-pass and `builtinAOContext`, rather
 than darkening the fully lit image. Sources: [r186 DOF](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_postprocessing_dof.html),
 [r186 lighting-aware GTAO](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_postprocessing_ao.html).
+
+### Node-effect inputs and composition
+
+Build the graph once after scene/camera setup. Call `await renderer.init()` before
+on-demand synchronous rendering; `setAnimationLoop()` initializes before its
+callback. `pass()` inherits `renderer.samples` unless overridden with `{ samples: 0 }`
+and follows the renderer's drawing-buffer size. Effects that sample depth may
+require single-sampled depth. The pipeline itself needs no `setSize()`.
+[r186 PassNode setup](https://github.com/mrdoob/three.js/blob/r186/src/nodes/display/PassNode.js)
+
+Factories below come from `three/addons/tsl/display/<file>.js`, **not** `three/tsl`.
+These are alternatives, not a recommended all-effects-at-once graph:
+
+| Effect / file | Inputs and returned signal |
+| --- | --- |
+| `bloom(color, strength, radius, threshold)` / [BloomNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/BloomNode.js) | Glow only; add to scene RGB. |
+| `dof(color, viewZ, focusDistance, focalLength, bokehScale)` / [DepthOfFieldNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/DepthOfFieldNode.js) | Complete filtered color; replace the image. Focus/focal-length controls are world-unit distances along the view direction; `bokehScale` is artistic, not a camera aperture. |
+| `film(color, intensity)` / [FilmNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/FilmNode.js); `rgbShift(color, amount, angle)` / [RGBShiftNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/RGBShiftNode.js); `chromaticAberration(color, strength, center, scale)` / [ChromaticAberrationNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/ChromaticAberrationNode.js) | Complete color filters. |
+| `afterImage(color, damp)` / [AfterImageNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/AfterImageNode.js) | Complete temporal image; retain/dispose the history owner. Higher `damp` in `[0, 1]` retains more history. |
+| `dotScreen(color, angle, scale)` / [DotScreenNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/DotScreenNode.js); `smaa(color)` / [SMAANode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/SMAANode.js) | Complete filters; SMAA expects linear input. |
+| `lut3D(color, texture3D(lutTexture), size, intensity)` / [Lut3DNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/Lut3DNode.js) | Complete graded color; provide a ready `Data3DTexture` LUT, its edge size, and a correctly authored input color domain. The LUT is data, not an sRGB image. |
+| `pixelationPass(scene, camera, pixelSize)` / [PixelationPassNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/PixelationPassNode.js) | Renders a new scene image; replaces beauty `pass()`. |
+| `outline(scene, camera, { selectedObjects })` / [OutlineNode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/OutlineNode.js) | Edge masks `.visibleEdge`/`.hiddenEdge`; color and add to the beauty RGB. |
+| `ssao(depth, normalView, camera)` / [SSAONode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/SSAONode.js); `ao(depth, normalView, camera)` / [GTAONode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/GTAONode.js) | Occlusion factor in `.r`; not a ready beauty image. Prefer lighting-context integration where appropriate. |
+| `traa(color, depth, velocity, camera)` / [TRAANode](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/TRAANode.js) | Complete temporally antialiased color; needs a velocity MRT and MSAA disabled. |
+
+Sources: [r186 display-node source directory](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/tsl/display),
+[r186 LUT contract](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/Lut3DNode.js),
+[r186 DOF units](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/DepthOfFieldNode.js),
+[r186 outline composition](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/OutlineNode.js)
+
+### DOF followed by display-space FXAA
+
+The caller owns an initialized `WebGPURenderer`, scene/camera, loop, and size.
+This factory owns the scene pass, DOF/FXAA nodes, and pipeline. Use a perspective
+camera: r186 `PassNode.getViewZNode()` uses perspective depth reconstruction.
+
+<!-- check: post-dof-fxaa -->
+```js
+import { RenderPipeline } from 'three/webgpu';
+import { pass, renderOutput, uniform } from 'three/tsl';
+import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
+import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
+
+function createDOFFXAAPipeline(renderer, scene, camera) {
+  const scenePass = pass(scene, camera, { samples: 0 });
+  const focus = uniform(4.5);
+  const dofNode = dof(scenePass.getTextureNode(), scenePass.getViewZNode(), focus, 1.2, 2.5);
+  const fxaaNode = fxaa(renderOutput(dofNode));
+  const renderPipeline = new RenderPipeline(renderer);
+  renderPipeline.outputColorTransform = false;
+  renderPipeline.outputNode = fxaaNode;
+  return {
+    renderPipeline,
+    focus,
+    render() { renderPipeline.render(); },
+    dispose() {
+      fxaaNode.dispose();
+      dofNode.dispose();
+      scenePass.dispose();
+      renderPipeline.dispose();
+    },
+  };
+}
+```
+
+Change `focus.value` without rebuilding. After changing `outputNode` or
+`outputColorTransform` on an already-rendered pipeline, set `needsUpdate = true`.
+Do not add scene color to the DOF result; it already contains the scene.
+[r186 FXAA](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/FXAANode.js),
+[r186 pipeline output graph](https://github.com/mrdoob/three.js/blob/r186/src/renderers/common/RenderPipeline.js)
+
+### Custom screen warp and emissive-only bloom
+
+TSL samples screen textures with `screenUV`, not a mesh's UVs. This factory owns
+its scene/bloom nodes and pipeline; the caller owns initialized renderer, scene
+resources, loop, and resize. Give meshes emissive node materials (and lighting for
+lit materials) to populate the emissive MRT attachment. The glow affects only the
+captured emissive contribution, not an arbitrary selection of non-emissive objects.
+
+<!-- check: post-emissive-wave -->
+```js
+import { RenderPipeline, BlendMode, NormalBlending } from 'three/webgpu';
+import { pass, mrt, output, emissive, screenUV, time, vec2, vec4 } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+
+function createEmissiveWavePipeline(renderer, scene, camera) {
+  const scenePass = pass(scene, camera);
+  const attachments = mrt({ output, emissive: vec4(emissive, output.a) });
+  attachments.setBlendMode('emissive', new BlendMode(NormalBlending));
+  scenePass.setMRT(attachments);
+  const sceneColor = scenePass.getTextureNode('output');
+  const glow = bloom(scenePass.getTextureNode('emissive'), 1, 0.4, 0.1);
+  const offset = vec2(screenUV.y.mul(10).add(time).sin().mul(0.01), 0);
+  const warped = sceneColor.sample(screenUV.add(offset));
+  const renderPipeline = new RenderPipeline(renderer);
+  renderPipeline.outputNode = vec4(warped.rgb.add(glow.rgb), warped.a);
+  return {
+    renderPipeline,
+    render() { renderPipeline.render(); },
+    dispose() {
+      glow.dispose();
+      scenePass.dispose();
+      renderPipeline.dispose();
+    },
+  };
+}
+```
+
+The warp affects the beauty image only here; warp the bloom source too if that is
+the intended design. Explicit emissive alpha/blending preserves transparent
+contributions instead of treating the attachment as opaque. MRT needs backend
+attachment support; per-attachment blend modes on the WebGL fallback require
+`OES_draw_buffers_indexed`. The `WebGLRenderer` node-material bridge cannot run this
+graph. Keep color linear and leave the final transform automatic.
+[r186 emissive MRT bloom example](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_postprocessing_bloom_emissive.html),
+[r186 MRT blend modes](https://github.com/mrdoob/three.js/blob/r186/src/nodes/core/MRTNode.js),
+[r186 fallback blend support](https://github.com/mrdoob/three.js/blob/r186/src/renderers/webgl-fallback/utils/WebGLState.js),
+[r186 screen UV](https://github.com/mrdoob/three.js/blob/r186/src/nodes/display/ScreenNode.js)
+
+For TRAA, create a renderer without antialiasing, set
+`scenePass.setMRT(mrt({ output, velocity }))`, and feed its `output`, `depth`, and
+`velocity` texture nodes plus the camera to `traa(...)`. Preserve history across
+frames and retain/dispose both TRAA and scene-pass owners. Do not independently
+jitter the camera or combine this with a multisampled scene pass.
+[r186 TRAA contract](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/TRAANode.js)
+
+### Lighting-aware GTAO
+
+Unlike multiplying final color, `builtinAOContext` supplies AO to the lighting
+model without indiscriminately darkening emissive/direct lighting. It needs a
+separate single-sampled depth/normal pre-pass. Both pre-pass attachments must use
+the same camera and view-space normals.
+
+<!-- check: post-gtao-context -->
+```js
+import { RenderPipeline } from 'three/webgpu';
+import { pass, mrt, normalView, screenUV, builtinAOContext } from 'three/tsl';
+import { ao } from 'three/addons/tsl/display/GTAONode.js';
+
+function createGTAOPipeline(renderer, scene, camera) {
+  const prePass = pass(scene, camera, { samples: 0 });
+  prePass.transparent = false;
+  prePass.setMRT(mrt({ output: normalView }));
+  const aoPass = ao(prePass.getTextureNode('depth'), prePass.getTextureNode(), camera);
+  const scenePass = pass(scene, camera);
+  scenePass.contextNode = builtinAOContext(aoPass.getTextureNode().sample(screenUV).r);
+  const renderPipeline = new RenderPipeline(renderer);
+  renderPipeline.outputNode = scenePass;
+  return {
+    renderPipeline,
+    aoPass,
+    render() { renderPipeline.render(); },
+    dispose() {
+      aoPass.dispose();
+      prePass.dispose();
+      scenePass.dispose();
+      renderPipeline.dispose();
+    },
+  };
+}
+```
+
+The caller owns an initialized renderer, lit scene materials/lights/environment,
+camera, size, and loop. This factory owns the two passes, AO node, and pipeline.
+The minimal graph leaves GTAO's default temporal filtering off and may be noisy:
+denoise it spatially, or enable `useTemporalFiltering` only with a TRAA/velocity
+graph. The normal pre-pass excludes transparent surfaces because their color and
+depth need not represent the same nearest surface.
+[r186 GTAO temporal contract](https://github.com/mrdoob/three.js/blob/r186/examples/jsm/tsl/display/GTAONode.js)
+[r186 lighting-aware AO example](https://github.com/mrdoob/three.js/blob/r186/examples/webgpu_postprocessing_ao.html)
 
 Do not use `three/addons/nodes/Nodes.js`, `THREE.PostProcessing`, `TRAAPassNode`,
 `PassNode.setResolution()`, `AnamorphicNode`, or `SSAAPassNode.clearColor/clearAlpha`.
@@ -329,7 +739,7 @@ import { pass, mrt, output, normalView, vec4 } from 'three/tsl';
 import { ssao } from 'three/addons/tsl/display/SSAONode.js';
 
 function createSSAOPipeline(renderer, scene, camera) {
-  const scenePass = pass(scene, camera);
+  const scenePass = pass(scene, camera, { samples: 0 });
   scenePass.setMRT(mrt({ output, normal: normalView }));
   const sceneColor = scenePass.getTextureNode('output');
   const aoPass = ssao(
